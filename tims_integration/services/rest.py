@@ -42,7 +42,6 @@ def build_payload(doc, device_setup):
     rct_no = doc.name
     customer_pin = frappe.db.get_value("Customer", doc.customer, "tax_id") or ''
     invoice_items = get_invoice_items(doc.name)
-    tax_category = get_tax_category(doc.name)
     default_tax = get_default_invoice_tax(doc.name)
 
     vat_values = initialize_vat_values()
@@ -54,7 +53,7 @@ def build_payload(doc, device_setup):
         if not tax_title:
             tax_title, tax_rate = default_tax
 
-        new_item, taxable_amount, tax_amount, category = calculate_tax(item, tax_category, tax_title, tax_rate)
+        new_item, taxable_amount, tax_amount, category = calculate_tax(item, tax_title, tax_rate)
         vat_values = update_vat_values(vat_values, category, taxable_amount, tax_amount)
         items.append(new_item)
 
@@ -96,11 +95,6 @@ def get_default_invoice_tax(invoice):
     return title, row.rate or 0
 
 
-def get_tax_category(invoice):
-    is_inclusive_or_exclusive = frappe.db.get_value('Sales Taxes and Charges', {'parenttype': 'Sales Invoice', 'parent': invoice}, 'included_in_print_rate')
-    return "Inclusive" if is_inclusive_or_exclusive == 1 else "Exclusive"
-
-
 def initialize_vat_values():
     return {
         "VAT_A_NET": 0,
@@ -136,7 +130,7 @@ def classify_tax(tax_title, tax_rate):
     return None, 0.0
 
 
-def calculate_tax(item, tax_category, tax_title, tax_rate):
+def calculate_tax(item, tax_title, tax_rate):
     category, rate = classify_tax(tax_title, tax_rate)
     if category is None:
         frappe.log_error(
@@ -151,9 +145,11 @@ def calculate_tax(item, tax_category, tax_title, tax_rate):
 
     qty = float(item.qty or 1.0)
 
+    # base_net_rate is always VAT-exclusive, whether or not the invoice tax is
+    # included_in_print_rate. KRA expects unitPrice inclusive of VAT.
     base_net_rate = float(item.base_net_rate or 0)
 
-    unit_price = round(base_net_rate, 2)
+    unit_price = round(base_net_rate * tax_value, 2)
     discount = 0.0
 
     is_exempt = category == "exempt"
@@ -168,11 +164,7 @@ def calculate_tax(item, tax_category, tax_title, tax_rate):
         "taxtype": "exempted" if is_exempt else category,
     }
 
-    if tax_category == "Inclusive":
-        taxable_amount = (unit_price * qty - discount) / tax_value
-    else:
-        taxable_amount = unit_price * qty - discount
-
+    taxable_amount = base_net_rate * qty - discount
     tax_amount = taxable_amount * (rate / 100)
 
     return new_item, taxable_amount, tax_amount, category
