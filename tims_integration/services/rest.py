@@ -42,7 +42,7 @@ def build_payload(doc, device_setup):
     # (e.g. "01") to the invoice number on the fiscal receipt.
     till_no = str(device_setup.till_number or "").strip()
     rct_no = doc.name
-    customer_pin = frappe.db.get_value("Customer", doc.customer, "tax_id") or ''
+    customer_pin = get_customer_pin(doc)
     invoice_items = get_invoice_items(doc.name)
     default_tax = get_default_invoice_tax(doc.name)
 
@@ -61,6 +61,19 @@ def build_payload(doc, device_setup):
 
     payload = create_payload(doc, vat_values, items, payment_method, customer_pin, till_no, rct_no)
     return payload
+
+
+def get_customer_pin(doc):
+    """
+    KRA PIN for the buyer. Sales Invoice.tax_id is the authoritative value (it is
+    fetched from the Customer at invoice time and can be overridden per invoice);
+    fall back to the Customer record for invoices where it was never populated.
+    """
+    pin = (doc.get("tax_id") or "").strip()
+    if pin:
+        return pin
+
+    return (frappe.db.get_value("Customer", doc.customer, "tax_id") or "").strip()
 
 
 def get_invoice_items(invoice):
@@ -132,6 +145,14 @@ def classify_tax(tax_title, tax_rate):
     return None, 0.0
 
 
+# taxtype value the TIMS API expects per band. Rated bands send their rate as-is
+# ("16", "8", ...); the two non-VATable bands have their own literals.
+TAX_TYPE_CODES = {
+    "zero": "0",
+    "exempt": "exempted",
+}
+
+
 def calculate_tax(item, tax_title, tax_rate):
     category, rate = classify_tax(tax_title, tax_rate)
     if category is None:
@@ -154,7 +175,6 @@ def calculate_tax(item, tax_title, tax_rate):
     unit_price = round(base_net_rate * tax_value, 2)
     discount = 0.0
 
-    is_exempt = category == "exempt"
     product_code = get_hs_code(item.item_code, category)
 
     new_item = {
@@ -163,7 +183,7 @@ def calculate_tax(item, tax_title, tax_rate):
         "quantity": abs(float(qty)),
         "unitPrice": abs(float(unit_price)),
         "discount": abs(float(discount)),
-        "taxtype": "exempted" if is_exempt else category,
+        "taxtype": TAX_TYPE_CODES.get(category, category),
     }
 
     taxable_amount = base_net_rate * qty - discount
@@ -278,42 +298,69 @@ def create_payload(doc, vat_values, items, payment_method, customer_pin, till_no
 
 
 def send_payload(payload, invoice, doc):
+    device_setup = frappe.get_single('TIMS Device Setup')
+    url = f"http://{device_setup.ip}:{device_setup.port}/api/values/PostTims"
+
     try:
-        device_setup = frappe.get_single('TIMS Device Setup')
-        response = requests.post(
-            f"http://{device_setup.ip}:{device_setup.port}/api/values/PostTims",
-            json=payload,
-            timeout=60
+        response = requests.post(url, json=payload, timeout=60)
+    except Exception:
+        # Nothing reached the device, so there is no response to record - log the
+        # real cause rather than reporting every failure as a timeout.
+        frappe.log_error(
+            title="TIMS KRA: device unreachable",
+            message="POST {0} for {1} failed.\n\nPayload:\n{2}\n\n{3}".format(
+                url, invoice, payload, frappe.get_traceback())
         )
-        handle_response(response, invoice, doc, payload)
-    except Exception as e:
         frappe.msgprint(
-            msg="Request Time Out Error, please make sure the TIMS/ETR Machine is active.",
+            msg="Could not reach the TIMS/ETR Machine at {0}. Please make sure it is "
+                "active - see the Error Log for details.".format(url),
             title="Error Message",
             indicator='red',
         )
+        return
+
+    handle_response(response, invoice, doc, payload)
+
+
+def parse_response(response):
+    """
+    TIMS returns JSON on success but can return an HTML error page or an empty body
+    when it rejects a payload. Always yield a dict so the exchange is still recorded.
+    """
+    try:
+        data = json.loads(response.text)
+    except ValueError:
+        return {
+            "ResponseCode": str(response.status_code),
+            "Message": (response.text or "").strip()[:1000] or "Empty response from TIMS device",
+        }
+
+    if not isinstance(data, dict):
+        return {"ResponseCode": str(response.status_code), "Message": str(data)[:1000]}
+
+    return data
 
 
 def handle_response(response, invoice, doc, payload):
-    data = json.loads(response.text)
+    data = parse_response(response)
 
     kra_response = frappe.get_doc({
         "doctype": "KRA Response",
-        "response_code": data["ResponseCode"] or '',
-        "message": data["Message"],
-        "tin": data["TSIN"],
-        "cusn": data["CUSN"],
-        "cuin": data["CUIN"],
-        "qr_code": data["QRCode"],
-        "signing_time": data["dtStmp"],
+        "response_code": data.get("ResponseCode") or '',
+        "message": data.get("Message") or '',
+        "tin": data.get("TSIN") or '',
+        "cusn": data.get("CUSN") or '',
+        "cuin": data.get("CUIN") or '',
+        "qr_code": data.get("QRCode") or '',
+        "signing_time": data.get("dtStmp") or '',
         "invoice_number": invoice,
         "payload_sent": str(payload)
     })
 
-    kra_response.insert()
+    kra_response.insert(ignore_permissions=True)
     frappe.db.commit()
 
-    if data['ResponseCode'] == '000':
+    if data.get('ResponseCode') == '000':
         update_doc_with_response(doc, data)
     else:
         frappe.msgprint(
@@ -324,12 +371,12 @@ def handle_response(response, invoice, doc, payload):
 
 
 def update_doc_with_response(doc, data):
-    doc.custom_tims_response_code = data["ResponseCode"]
-    doc.custom_tsin = data["TSIN"]
-    doc.custom_cusn = data["CUSN"]
-    doc.custom_cuin = data["CUIN"]
-    doc.custom_kra_qr_code_data = data["QRCode"]
-    doc.custom_kra_signing_time = data["dtStmp"]
+    doc.custom_tims_response_code = data.get("ResponseCode")
+    doc.custom_tsin = data.get("TSIN")
+    doc.custom_cusn = data.get("CUSN")
+    doc.custom_cuin = data.get("CUIN")
+    doc.custom_kra_qr_code_data = data.get("QRCode")
+    doc.custom_kra_signing_time = data.get("dtStmp")
     doc.custom_sent_to_kra = 1
     doc.save(ignore_permissions=True)
 
