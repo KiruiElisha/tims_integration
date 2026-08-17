@@ -89,7 +89,7 @@ def send_test_invoice(name):
 	return {
 		"invoice": invoice.name,
 		"sent_to_kra": invoice.custom_sent_to_kra,
-		"response_code": invoice.custom_tims_code,
+		"response_code": invoice.custom_tims_response_code,
 	}
 
 
@@ -118,7 +118,7 @@ def send_test_return(sales_invoice):
 	return {
 		"credit_note": credit_note.name,
 		"sent_to_kra": credit_note.custom_sent_to_kra,
-		"response_code": credit_note.custom_tims_code,
+		"response_code": credit_note.custom_tims_response_code,
 	}
 
 

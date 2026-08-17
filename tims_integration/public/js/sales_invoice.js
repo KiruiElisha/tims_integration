@@ -48,7 +48,7 @@ function show_tims_details(frm) {
                         <strong>TIMS Response Code:</strong> ${frm.doc.custom_tims_response_code || ''}
                     </div>
                     <div class="col-sm-6">
-                        <strong>Signing Time:</strong> ${frm.doc.custom_signing_time || ''}
+                        <strong>Signing Time:</strong> ${frm.doc.custom_kra_signing_time || ''}
                     </div>
                 </div>
                 <div class="row" style="margin-top: 10px;">
@@ -59,15 +59,15 @@ function show_tims_details(frm) {
                         <strong>CUSN:</strong> ${frm.doc.custom_cusn || ''}
                     </div>
                     <div class="col-sm-4">
-                        <strong>CUIN:</strong> ${frm.doc.custom__cuin || ''}
+                        <strong>CUIN:</strong> ${frm.doc.custom_cuin || ''}
                     </div>
                 </div>
-                ${frm.doc.custom_kra_qr_code ? `
+                ${frm.doc.custom_kra_qr_code_data ? `
                 <div class="row" style="margin-top: 10px;">
                     <div class="col-sm-12">
                         <strong>QR Code Data:</strong>
                         <div style="word-break: break-all; margin-top: 5px;">
-                            ${frm.doc.custom_kra_qr_code}
+                            ${frm.doc.custom_kra_qr_code_data}
                         </div>
                     </div>
                 </div>

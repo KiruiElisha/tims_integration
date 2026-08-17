@@ -294,12 +294,12 @@ def handle_response(response, invoice, doc, payload):
 
 
 def update_doc_with_response(doc, data):
-    doc.custom_tims_code = data["ResponseCode"]
+    doc.custom_tims_response_code = data["ResponseCode"]
     doc.custom_tsin = data["TSIN"]
     doc.custom_cusn = data["CUSN"]
-    doc.custom__cuin = data["CUIN"]
-    doc.custom_kra_qr_code = data["QRCode"]
-    doc.custom_signing_time = data["dtStmp"]
+    doc.custom_cuin = data["CUIN"]
+    doc.custom_kra_qr_code_data = data["QRCode"]
+    doc.custom_kra_signing_time = data["dtStmp"]
     doc.custom_sent_to_kra = 1
     doc.save(ignore_permissions=True)
 
