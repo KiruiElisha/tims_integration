@@ -63,12 +63,10 @@
    "label": "Additional Settings"
   },
   {
-   "default": "1",
-   "description": "Till number reported to KRA TIMS (required by the TIMS device API)",
+   "description": "Till number reported to KRA TIMS. Leave blank unless the device requires one - a set value is prefixed to the invoice number on the fiscal receipt.",
    "fieldname": "till_number",
-   "fieldtype": "Int",
-   "label": "Till Number",
-   "reqd": 1
+   "fieldtype": "Data",
+   "label": "Till Number"
   },
   {
    "default": "0",

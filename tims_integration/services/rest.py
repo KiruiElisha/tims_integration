@@ -38,7 +38,9 @@ def is_valid_posting_date(doc, device_setup):
 
 def build_payload(doc, device_setup):
     payment_method = "Cash" if doc.status == 'Paid' else 'Credit'
-    till_no = int(device_setup.till_number or 1)
+    # Blank unless a till is explicitly configured: the device prefixes a set till
+    # (e.g. "01") to the invoice number on the fiscal receipt.
+    till_no = str(device_setup.till_number or "").strip()
     rct_no = doc.name
     customer_pin = frappe.db.get_value("Customer", doc.customer, "tax_id") or ''
     invoice_items = get_invoice_items(doc.name)
@@ -153,7 +155,7 @@ def calculate_tax(item, tax_title, tax_rate):
     discount = 0.0
 
     is_exempt = category == "exempt"
-    product_code = get_hs_code(item.item_code) if is_exempt else item.item_code
+    product_code = get_hs_code(item.item_code, category)
 
     new_item = {
         "productCode": product_code,
@@ -170,15 +172,20 @@ def calculate_tax(item, tax_title, tax_rate):
     return new_item, taxable_amount, tax_amount, category
 
 
-def get_hs_code(item_code):
+# KRA expects a fixed HS code as the productCode for non-VATable sales, regardless
+# of the item's own customs tariff number.
+BAND_HS_CODES = {
+    "exempt": "0043.11.00",
+    "zero": "0022.12.00",
+}
+
+
+def get_hs_code(item_code, category):
     """
-    Returns the item's customs/HS code via the standard Item.customs_tariff_number link,
-    or "" if the item has none configured.
+    Returns the productCode to report for an item: the static KRA HS code for
+    exempt/zero-rated sales, or the plain item code for VATable sales.
     """
-    tariff_number = frappe.db.get_value("Item", item_code, "customs_tariff_number")
-    if not tariff_number:
-        return ""
-    return frappe.db.get_value("Customs Tariff Number", tariff_number, "tariff_number") or ""
+    return BAND_HS_CODES.get(category, item_code)
 
 
 VAT_BUCKETS = {
