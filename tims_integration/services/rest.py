@@ -206,6 +206,32 @@ def update_vat_values(vat_values, category, taxable_amount, tax_amount):
     return vat_values
 
 
+def get_original_cuin(doc):
+    """
+    A refund must quote the CUIN of the invoice it reverses, which lives on the
+    original invoice's KRA Response - not on the credit note itself.
+    """
+    original = doc.return_against
+    if not original:
+        frappe.throw("Credit note {0} has no Return Against invoice, so its "
+                     "original KRA CUIN cannot be determined.".format(doc.name))
+
+    cuin = frappe.db.get_value("Sales Invoice", original, "custom_cuin")
+    if not cuin:
+        cuin = frappe.db.get_value(
+            "KRA Response",
+            {"invoice_number": original, "response_code": "000"},
+            "cuin",
+            order_by="creation desc",
+        )
+
+    if not cuin:
+        frappe.throw("Invoice {0} has no KRA CUIN recorded, so a refund for it "
+                     "cannot be sent to TIMS.".format(original))
+
+    return cuin
+
+
 def create_payload(doc, vat_values, items, payment_method, customer_pin, till_no, rct_no):
     total = sum([
         vat_values["VAT_A_NET"] + vat_values["VAT_A"],
@@ -217,29 +243,34 @@ def create_payload(doc, vat_values, items, payment_method, customer_pin, till_no
     ])
 
     payload_type = "sales" if not doc.is_return else "refund"
-    cuin = "" if not doc.is_return else frappe.db.get_value("KRA Response", {"invoice_number": doc.name}, "cuin")
+    cuin = get_original_cuin(doc) if doc.is_return else ""
+
+    # A refund is identified by saleType, not by sign: the device rejects the payload
+    # with a totals error if the amounts come through negative.
+    def amount(value):
+        return round(abs(float(value)), 2)
 
     payload = {
         "saleType": payload_type,
         "cuin": cuin,
         "till": till_no,
         "rctNo": rct_no,
-        "total": round(float(total), 2),
-        "Paid": round(float(total), 2),
+        "total": amount(total),
+        "Paid": amount(total),
         "Payment": payment_method,
         "CustomerPIN": customer_pin,
-        "VAT_A_Net": round(float(vat_values["VAT_A_NET"]), 2),
-        "VAT_A": round(float(vat_values["VAT_A"]), 2),
-        "VAT_B_Net": round(float(vat_values["VAT_B_NET"]), 2),
-        "VAT_B": round(float(vat_values["VAT_B"]), 2),
-        "VAT_C_Net": round(float(vat_values["VAT_C_NET"]), 2),
-        "VAT_C": round(float(vat_values["VAT_C"]), 2),
-        "VAT_D_Net": round(float(vat_values["VAT_D_NET"]), 2),
-        "VAT_D": round(float(vat_values["VAT_D"]), 2),
-        "VAT_E_Net": round(float(vat_values["VAT_E_NET"]), 2),
-        "VAT_E": round(float(vat_values["VAT_E"]), 2),
-        "VAT_F_Net": round(float(vat_values["VAT_F_NET"]), 2),
-        "VAT_F": round(float(vat_values["VAT_F"]), 2),
+        "VAT_A_Net": amount(vat_values["VAT_A_NET"]),
+        "VAT_A": amount(vat_values["VAT_A"]),
+        "VAT_B_Net": amount(vat_values["VAT_B_NET"]),
+        "VAT_B": amount(vat_values["VAT_B"]),
+        "VAT_C_Net": amount(vat_values["VAT_C_NET"]),
+        "VAT_C": amount(vat_values["VAT_C"]),
+        "VAT_D_Net": amount(vat_values["VAT_D_NET"]),
+        "VAT_D": amount(vat_values["VAT_D"]),
+        "VAT_E_Net": amount(vat_values["VAT_E_NET"]),
+        "VAT_E": amount(vat_values["VAT_E"]),
+        "VAT_F_Net": amount(vat_values["VAT_F_NET"]),
+        "VAT_F": amount(vat_values["VAT_F"]),
         "data": items
     }
 
