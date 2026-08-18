@@ -1,11 +1,11 @@
 import frappe
 import json
 import requests
-from frappe.utils import getdate
+from frappe.utils import cint, getdate
 from datetime import datetime
 
 @frappe.whitelist()
-def send_request(invoice, doc=None):
+def send_request(invoice, doc=None, confirmed=0):
     try:
         device_setup = frappe.get_single('TIMS Device Setup')
         # Reuse the caller's document when there is one. Re-fetching during the
@@ -26,7 +26,18 @@ def send_request(invoice, doc=None):
                           "Posting' is off.".format(doc.posting_date))
             return
 
-        payload = build_payload(doc, device_setup)
+        payload, unclassified = build_payload(doc, device_setup)
+
+        # Fiscalisation cannot be undone, so anything that would declare figures
+        # differing from the invoice is never sent on the user's behalf. The invoice
+        # is left unsent until somebody reviews it and confirms via 'Send to TIMS'.
+        concerns = get_submission_concerns(doc, payload, unclassified)
+        if concerns and not cint(confirmed):
+            skip(invoice, " ".join(concerns) +
+                 " Review the invoice and use 'Send to TIMS' to confirm the amounts "
+                 "before they are declared to KRA.")
+            return
+
         send_payload(payload, invoice, doc)
     except Exception as e:
         handle_exception(e)
@@ -49,6 +60,68 @@ def skip(invoice, reason):
     )
 
 
+TOTAL_TOLERANCE = 0.01
+
+
+def get_submission_concerns(doc, payload, unclassified):
+    """
+    Reasons a human should look at this invoice before it is declared to KRA.
+    Empty means the payload agrees with the invoice and every band was resolved
+    from real tax data, so it can be sent automatically on submit.
+    """
+    concerns = []
+
+    if unclassified:
+        items = ", ".join(
+            "{0} (qty {1}, net {2})".format(u["item_code"], u["qty"], u["net_amount"])
+            for u in unclassified
+        )
+        concerns.append(
+            "No tax template or invoice tax row could be resolved for: {0}; "
+            "{1}% VAT would be assumed.".format(items, ASSUMED_RATE))
+
+    # The payload's VAT comes from item tax templates, while the invoice total comes
+    # from its Sales Taxes and Charges rows. They can disagree - an item tax template
+    # with no matching tax row gives KRA a higher total than the customer was billed.
+    grand_total = round(float(doc.get("base_grand_total") or 0), 2)
+    declared = round(float(payload["total"]), 2)
+    if abs(grand_total - declared) >= TOTAL_TOLERANCE:
+        concerns.append(
+            "Invoice grand total is {0} but {1} would be declared to KRA.".format(
+                grand_total, declared))
+
+    return concerns
+
+
+@frappe.whitelist()
+def preview_submission(invoice):
+    """
+    Builds the payload without sending it, so the user can be shown exactly what
+    would be declared to KRA and confirm it. Returns the payload, the items whose
+    tax band had to be assumed, and the invoice totals to check the payload against.
+    """
+    device_setup = frappe.get_single('TIMS Device Setup')
+    doc = frappe.get_doc("Sales Invoice", invoice)
+    payload, unclassified = build_payload(doc, device_setup)
+
+    concerns = get_submission_concerns(doc, payload, unclassified)
+
+    return {
+        "invoice": doc.name,
+        "payload": payload,
+        "unclassified": unclassified,
+        "concerns": concerns,
+        "assumed_rate": ASSUMED_RATE,
+        "already_sent": cint(doc.custom_sent_to_kra),
+        "invoice_totals": {
+            "net_total": float(doc.base_net_total or 0),
+            "grand_total": float(doc.base_grand_total or 0),
+            "currency": doc.currency,
+        },
+        "totals_match": not any(c.startswith("Invoice grand total") for c in concerns),
+    }
+
+
 def is_valid_posting_date(doc, device_setup):
     if device_setup.allow_other_day_posting:
         return True
@@ -57,6 +130,12 @@ def is_valid_posting_date(doc, device_setup):
 
 
 def build_payload(doc, device_setup):
+    """
+    Returns (payload, unclassified). `unclassified` lists items whose tax band could
+    not be resolved and for which the standard 16% VAT band was assumed. The caller
+    decides what to do about it - the assumption is never applied silently, because
+    it changes the total reported to KRA away from the invoice total.
+    """
     payment_method = "Cash" if doc.status == 'Paid' else 'Credit'
     # Blank unless a till is explicitly configured: the device prefixes a set till
     # (e.g. "01") to the invoice number on the fiscal receipt.
@@ -68,6 +147,7 @@ def build_payload(doc, device_setup):
 
     vat_values = initialize_vat_values()
     items = []
+    unclassified = []
 
     for item in invoice_items:
         tax_title = item.tax_title
@@ -75,12 +155,21 @@ def build_payload(doc, device_setup):
         if not tax_title:
             tax_title, tax_rate = default_tax
 
-        new_item, taxable_amount, tax_amount, category = calculate_tax(item, tax_title, tax_rate)
+        new_item, taxable_amount, tax_amount, category, assumed = calculate_tax(
+            item, tax_title, tax_rate)
         vat_values = update_vat_values(vat_values, category, taxable_amount, tax_amount)
         items.append(new_item)
 
+        if assumed:
+            unclassified.append({
+                "item_code": item.item_code,
+                "item_name": item.item_name,
+                "qty": float(item.qty or 0),
+                "net_amount": float(item.base_net_amount or 0),
+            })
+
     payload = create_payload(doc, vat_values, items, payment_method, customer_pin, till_no, rct_no)
-    return payload
+    return payload, unclassified
 
 
 RCT_NO_MAX_LENGTH = 18
@@ -203,16 +292,16 @@ TAX_TYPE_CODES = {
 }
 
 
+# Band assumed for an item whose tax cannot be resolved. It is only ever applied
+# after the user has confirmed it: see build_payload and UNCLASSIFIED_REASON.
+ASSUMED_CATEGORY, ASSUMED_RATE = "16", 16.0
+
+
 def calculate_tax(item, tax_title, tax_rate):
     category, rate = classify_tax(tax_title, tax_rate)
-    if category is None:
-        frappe.log_error(
-            title="TIMS KRA: Unclassified item tax",
-            message="Item {0} on invoice {1} has no resolvable tax template or "
-                     "invoice-level tax row; defaulting to the standard 16% VAT band.".format(
-                         item.item_code, item.name)
-        )
-        category, rate = "16", 16.0
+    assumed = category is None
+    if assumed:
+        category, rate = ASSUMED_CATEGORY, ASSUMED_RATE
 
     tax_value = 1 + (rate / 100)
 
@@ -239,7 +328,7 @@ def calculate_tax(item, tax_title, tax_rate):
     taxable_amount = base_net_rate * qty - discount
     tax_amount = taxable_amount * (rate / 100)
 
-    return new_item, taxable_amount, tax_amount, category
+    return new_item, taxable_amount, tax_amount, category, assumed
 
 
 # KRA expects a fixed HS code as the productCode for non-VATable sales, regardless
@@ -573,7 +662,7 @@ def diagnose(invoice):
         report["posting_date_ok"] = is_valid_posting_date(doc, device_setup)
 
         report["stage"] = "build_payload"
-        report["payload"] = build_payload(doc, device_setup)
+        report["payload"], report["unclassified"] = build_payload(doc, device_setup)
 
         report["stage"] = "post"
         response = requests.post(report["device_url"], json=report["payload"], timeout=60)
