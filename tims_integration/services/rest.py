@@ -10,24 +10,37 @@ def send_request(invoice):
         device_setup = frappe.get_single('TIMS Device Setup')
         doc = frappe.get_doc("Sales Invoice", invoice)
 
-        if device_setup.status == 'Active':
-            if is_valid_posting_date(doc, device_setup):
-                payload = build_payload(doc, device_setup)
-                send_payload(payload, invoice, doc)
-            else:
-                frappe.msgprint(
-                    msg="Invoice Posting Date Must be Today's Date",
-                    title='Error Message',
-                    indicator='red',
-                )
-        else:
-            frappe.msgprint(
-                msg='TIMS Device Setup for Sending Invoices is not Active.',
-                title='Error Message',
-                indicator='red',
-            )
+        if device_setup.status != 'Active':
+            skip(invoice, "TIMS Device Setup status is {0}, not Active.".format(
+                device_setup.status))
+            return
+
+        if not is_valid_posting_date(doc, device_setup):
+            skip(invoice, "Posting date {0} is not today and 'Allow Other Day "
+                          "Posting' is off.".format(doc.posting_date))
+            return
+
+        payload = build_payload(doc, device_setup)
+        send_payload(payload, invoice, doc)
     except Exception as e:
         handle_exception(e)
+
+
+def skip(invoice, reason):
+    """
+    Nothing was sent to KRA. Log it: a msgprint is invisible when the submit runs
+    from the on_submit hook, a background job or the API, which makes a skipped
+    submission indistinguishable from a broken one.
+    """
+    frappe.log_error(
+        title="TIMS KRA: invoice not sent",
+        message="{0} was not sent to KRA.\n\nReason: {1}".format(invoice, reason)
+    )
+    frappe.msgprint(
+        msg="{0} was not sent to KRA. {1}".format(invoice, reason),
+        title="TIMS Submission Skipped",
+        indicator='orange',
+    )
 
 
 def is_valid_posting_date(doc, device_setup):
@@ -317,6 +330,11 @@ def send_payload(payload, invoice, doc):
             title="Error Message",
             indicator='red',
         )
+        record_kra_response(
+            {"ResponseCode": "", "Message": "Device unreachable at {0}".format(url)},
+            invoice,
+            payload,
+        )
         return
 
     handle_response(response, invoice, doc, payload)
@@ -375,24 +393,41 @@ def parse_response(response):
     return data
 
 
+def record_kra_response(data, invoice, payload):
+    """
+    Persists the exchange. Runs in its own savepoint and swallows nothing quietly:
+    if the row cannot be written we still want the raw device reply in the Error Log,
+    otherwise a successful fiscalisation leaves no trace anywhere.
+    """
+    try:
+        kra_response = frappe.get_doc({
+            "doctype": "KRA Response",
+            "response_code": str(data.get("ResponseCode") or ''),
+            "message": str(data.get("Message") or ''),
+            "tin": str(data.get("TSIN") or ''),
+            "cusn": str(data.get("CUSN") or ''),
+            "cuin": str(data.get("CUIN") or ''),
+            "qr_code": str(data.get("QRCode") or ''),
+            "signing_time": parse_signing_time(data.get("dtStmp")),
+            "invoice_number": invoice,
+            "payload_sent": str(payload)
+        })
+        kra_response.insert(ignore_permissions=True)
+        frappe.db.commit()
+        return kra_response.name
+    except Exception:
+        frappe.db.rollback()
+        frappe.log_error(
+            title="TIMS KRA: could not record response",
+            message="Invoice: {0}\n\nDevice reply:\n{1}\n\nPayload:\n{2}\n\n{3}".format(
+                invoice, data, payload, frappe.get_traceback())
+        )
+        return None
+
+
 def handle_response(response, invoice, doc, payload):
     data = parse_response(response)
-
-    kra_response = frappe.get_doc({
-        "doctype": "KRA Response",
-        "response_code": data.get("ResponseCode") or '',
-        "message": data.get("Message") or '',
-        "tin": data.get("TSIN") or '',
-        "cusn": data.get("CUSN") or '',
-        "cuin": data.get("CUIN") or '',
-        "qr_code": data.get("QRCode") or '',
-        "signing_time": parse_signing_time(data.get("dtStmp")),
-        "invoice_number": invoice,
-        "payload_sent": str(payload)
-    })
-
-    kra_response.insert(ignore_permissions=True)
-    frappe.db.commit()
+    record_kra_response(data, invoice, payload)
 
     if data.get('ResponseCode') == '000':
         update_doc_with_response(doc, data, payload)
@@ -455,11 +490,62 @@ def update_doc_with_response(doc, data, payload=None):
 
 
 def handle_exception(exception):
-    error_message = "TIMS KRA Error.\n{}".format(frappe.get_traceback())
-    frappe.log_error(error_message, "TIMS KRA Error.")
+    frappe.log_error(
+        title="TIMS KRA Error",
+        message="{0}\n\n{1}".format(exception, frappe.get_traceback())
+    )
     frappe.msgprint(
         msg="Something Wrong, Please try again or check the "+"<a style='color: red; font-weight: bold;' href='/app/error-log'>Error Logs</a>",
         title="Error Message",
         indicator='red',
     )
     return exception
+
+
+@frappe.whitelist()
+def diagnose(invoice):
+    """
+    Runs the whole submission path for an invoice and returns every intermediate
+    result rather than routing failures to msgprint/Error Log. Use this when nothing
+    appears in the KRA Response list and it is unclear how far the request got:
+
+        bench --site <site> execute \
+            tims_integration.services.rest.diagnose --args "['SIN00005']"
+    """
+    report = {"invoice": invoice, "stage": "start"}
+
+    try:
+        device_setup = frappe.get_single('TIMS Device Setup')
+        doc = frappe.get_doc("Sales Invoice", invoice)
+
+        report["device_status"] = device_setup.status
+        report["device_url"] = "http://{0}:{1}/api/values/PostTims".format(
+            device_setup.ip, device_setup.port)
+        report["send_on_submit"] = device_setup.send_invoices_to_kra_on_submit
+        report["send_credit_notes"] = device_setup.send_credit_notes
+        report["till_number"] = device_setup.till_number
+        report["is_return"] = doc.is_return
+        report["already_sent"] = doc.custom_sent_to_kra
+        report["posting_date_ok"] = is_valid_posting_date(doc, device_setup)
+
+        report["stage"] = "build_payload"
+        report["payload"] = build_payload(doc, device_setup)
+
+        report["stage"] = "post"
+        response = requests.post(report["device_url"], json=report["payload"], timeout=60)
+        report["http_status"] = response.status_code
+        report["raw_body"] = (response.text or "")[:2000]
+
+        report["stage"] = "parse"
+        data = parse_response(response)
+        report["parsed"] = data
+
+        report["stage"] = "record"
+        report["kra_response"] = record_kra_response(data, invoice, report["payload"])
+
+        report["stage"] = "done"
+    except Exception as e:
+        report["error"] = str(e)
+        report["traceback"] = frappe.get_traceback()
+
+    return report
