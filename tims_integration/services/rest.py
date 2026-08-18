@@ -322,6 +322,40 @@ def send_payload(payload, invoice, doc):
     handle_response(response, invoice, doc, payload)
 
 
+SIGNING_TIME_FORMATS = (
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%dT%H:%M:%S",
+    "%d/%m/%Y %H:%M:%S",
+    "%d-%m-%Y %H:%M:%S",
+    "%Y%m%d%H%M%S",
+    "%d/%m/%Y",
+    "%Y-%m-%d",
+)
+
+
+def parse_signing_time(value):
+    """
+    The device returns dtStmp as a plain string whose format varies by firmware, but
+    KRA Response.signing_time is a Datetime. Return None rather than let an
+    unparseable stamp abort the insert and lose the whole response record.
+    """
+    if not value:
+        return None
+
+    value = str(value).strip()
+    for fmt in SIGNING_TIME_FORMATS:
+        try:
+            return datetime.strptime(value, fmt)
+        except ValueError:
+            continue
+
+    frappe.log_error(
+        title="TIMS KRA: unparsed signing time",
+        message="Could not parse dtStmp {0!r} in any known format.".format(value)
+    )
+    return None
+
+
 def parse_response(response):
     """
     TIMS returns JSON on success but can return an HTML error page or an empty body
@@ -352,7 +386,7 @@ def handle_response(response, invoice, doc, payload):
         "cusn": data.get("CUSN") or '',
         "cuin": data.get("CUIN") or '',
         "qr_code": data.get("QRCode") or '',
-        "signing_time": data.get("dtStmp") or '',
+        "signing_time": parse_signing_time(data.get("dtStmp")),
         "invoice_number": invoice,
         "payload_sent": str(payload)
     })
@@ -361,7 +395,7 @@ def handle_response(response, invoice, doc, payload):
     frappe.db.commit()
 
     if data.get('ResponseCode') == '000':
-        update_doc_with_response(doc, data)
+        update_doc_with_response(doc, data, payload)
     else:
         frappe.msgprint(
             msg="Invoice Submission to KRA Failed. Please Check KRA Response Generated.",
@@ -370,19 +404,54 @@ def handle_response(response, invoice, doc, payload):
         )
 
 
-def update_doc_with_response(doc, data):
-    doc.custom_tims_response_code = data.get("ResponseCode")
-    doc.custom_tsin = data.get("TSIN")
-    doc.custom_cusn = data.get("CUSN")
-    doc.custom_cuin = data.get("CUIN")
-    doc.custom_kra_qr_code_data = data.get("QRCode")
-    doc.custom_kra_signing_time = data.get("dtStmp")
-    doc.custom_sent_to_kra = 1
-    doc.save(ignore_permissions=True)
+# Each VAT band's net/tax pair is mirrored onto the invoice. Band F (exempt) has no
+# pair of custom fields, so only A-E are stored.
+RECORDED_VAT_BANDS = ("A", "B", "C", "D", "E")
 
-    if doc.docstatus == 0:
-        doc.submit()
-        doc.reload()
+
+def get_vat_band_values(payload):
+    """
+    The per-band totals and the set of tax types actually reported, taken from the
+    payload that was sent so the invoice records exactly what KRA received.
+    """
+    values = {}
+    for band in RECORDED_VAT_BANDS:
+        values["custom_taxbl_amount_{0}".format(band.lower())] = payload.get("VAT_{0}_Net".format(band))
+        values["custom_tax_{0}".format(band.lower())] = payload.get("VAT_{0}".format(band))
+
+    tax_types = []
+    for item in payload.get("data") or []:
+        tax_type = str(item.get("taxtype") or "").strip()
+        if tax_type and tax_type not in tax_types:
+            tax_types.append(tax_type)
+
+    values["custom_taxation_type"] = ", ".join(tax_types)
+
+    return values
+
+
+def update_doc_with_response(doc, data, payload=None):
+    signing_time = parse_signing_time(data.get("dtStmp"))
+
+    values = {
+        "custom_tims_response_code": data.get("ResponseCode"),
+        "custom_tsin": data.get("TSIN"),
+        "custom_cusn": data.get("CUSN"),
+        "custom_cuin": data.get("CUIN"),
+        "custom_kra_qr_code_data": data.get("QRCode"),
+        # custom_kra_signing_time is a Date field, so store the date part only.
+        "custom_kra_signing_time": signing_time.date() if signing_time else None,
+        "custom_sent_to_kra": 1,
+    }
+
+    if payload:
+        values.update(get_vat_band_values(payload))
+
+    # db_set writes straight to the row. doc.save() cannot be used here: this runs
+    # from the Sales Invoice on_submit hook, where saving collides with the in-flight
+    # submit and aborts before the fiscal details are stored.
+    for field, value in values.items():
+        doc.db_set(field, value, update_modified=False)
 
 
 def handle_exception(exception):
