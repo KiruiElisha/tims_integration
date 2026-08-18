@@ -3,22 +3,26 @@ from frappe import _
 
 def sales_invoice_on_submit(doc, method):
     """Handle TIMS submission on Sales Invoice submit"""
-    
-    # Get TIMS settings
+
+    from tims_integration.services.rest import send_request, skip
+
     tims_settings = frappe.get_single('TIMS Device Setup')
-    
+
+    # Each of these used to return silently, which left no trace anywhere that an
+    # invoice had been deliberately skipped - indistinguishable from a broken send.
     if not tims_settings.send_invoices_to_kra_on_submit:
+        skip(doc.name, "'Send Invoices To KRA On Submit' is off in TIMS Device Setup.")
         return
-        
+
     if doc.is_return and not tims_settings.send_credit_notes:
+        skip(doc.name, "'Send Credit Notes To KRA' is off in TIMS Device Setup.")
         return
-        
-    # Don't send if already sent
+
     if doc.custom_sent_to_kra:
+        skip(doc.name, "Already sent to KRA.")
         return
-        
+
     try:
-        from tims_integration.services.rest import send_request
         send_request(doc.name, doc=doc)
         
     except Exception as e:

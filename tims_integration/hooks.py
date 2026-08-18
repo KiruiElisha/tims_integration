@@ -246,10 +246,9 @@ fixtures = [
     }
 ]
 
-app_include_js = [
-    "/assets/tims_integration/js/sales_invoice.js"
-]
-
+# sales_invoice.js is a Sales Invoice form script, so it belongs in doctype_js only.
+# It was also listed in app_include_js, which loads it on every desk page and
+# registers the refresh handler a second time.
 doctype_js = {
     "Sales Invoice": "public/js/sales_invoice.js"
 }
