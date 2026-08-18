@@ -560,3 +560,58 @@ def diagnose(invoice):
         report["traceback"] = frappe.get_traceback()
 
     return report
+
+
+@frappe.whitelist()
+def check_setup():
+    """
+    Reports whether the app is actually wired up on this site: fixtures applied,
+    DocTypes present, hook registered and the device configured. Run this first when
+    a submit appears to do nothing at all.
+
+        bench --site <site> execute tims_integration.services.rest.check_setup
+    """
+    report = {}
+
+    expected_fields = [
+        "custom_sent_to_kra", "custom_tims_response_code", "custom_cuin",
+        "custom_cusn", "custom_tsin", "custom_kra_qr_code_data",
+        "custom_kra_signing_time", "custom_taxation_type",
+    ] + ["custom_tax_{0}".format(b) for b in "abcde"] \
+      + ["custom_taxbl_amount_{0}".format(b) for b in "abcde"]
+
+    existing = set(frappe.get_all(
+        "Custom Field",
+        filters={"dt": "Sales Invoice", "fieldname": ["in", expected_fields]},
+        pluck="fieldname",
+    ))
+    report["missing_custom_fields"] = sorted(set(expected_fields) - existing)
+
+    # A Custom Field row can exist while the column does not, if a migrate was
+    # interrupted - check the table itself rather than trusting the metadata.
+    columns = set(frappe.db.get_table_columns("Sales Invoice"))
+    report["missing_columns"] = sorted(f for f in expected_fields if f not in columns)
+
+    report["doctypes_present"] = {
+        dt: frappe.db.exists("DocType", dt) is not None
+        for dt in ("KRA Response", "TIMS Device Setup")
+    }
+
+    hooks = frappe.get_hooks("doc_events") or {}
+    report["on_submit_hook"] = (hooks.get("Sales Invoice") or {}).get("on_submit")
+
+    device_setup = frappe.get_single("TIMS Device Setup")
+    report["device"] = {
+        "status": device_setup.status,
+        "ip": device_setup.ip,
+        "port": device_setup.port,
+        "till_number": device_setup.till_number,
+        "send_invoices_to_kra_on_submit": device_setup.send_invoices_to_kra_on_submit,
+        "send_credit_notes": device_setup.send_credit_notes,
+        "allow_other_day_posting": device_setup.allow_other_day_posting,
+        "allow_submission_on_failure": device_setup.allow_submission_on_failure,
+    }
+
+    report["kra_responses_logged"] = frappe.db.count("KRA Response")
+
+    return report

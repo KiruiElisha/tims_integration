@@ -238,12 +238,10 @@ fixtures = [
             ["doc_type", "=", "Sales Invoice"]
         ]
     },
-    {
-        "dt": "DocType",
-        "filters": [
-            ["name", "in", ["KRA Response", "TIMS Device Setup"]]
-        ]
-    }
+    # KRA Response and TIMS Device Setup are this app's own DocTypes: they live in
+    # tims_integration/tims_integration/doctype/ and are created by bench migrate.
+    # Exporting them as fixtures too makes export-fixtures write a doctype.json that
+    # then competes with those module definitions on every migrate.
 ]
 
 # sales_invoice.js is a Sales Invoice form script, so it belongs in doctype_js only.
