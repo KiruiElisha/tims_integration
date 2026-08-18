@@ -5,10 +5,16 @@ from frappe.utils import today
 from datetime import datetime
 
 @frappe.whitelist()
-def send_request(invoice):
+def send_request(invoice, doc=None):
     try:
         device_setup = frappe.get_single('TIMS Device Setup')
-        doc = frappe.get_doc("Sales Invoice", invoice)
+        # Reuse the caller's document when there is one. Re-fetching during the
+        # on_submit hook yields a second in-memory copy, so the fiscal fields get
+        # written to a document the submit flow is not holding.
+        # send_request is whitelisted, so anything arriving over HTTP as `doc` is a
+        # string, not a Document - only trust an actual Document instance.
+        if not hasattr(doc, "doctype"):
+            doc = frappe.get_doc("Sales Invoice", invoice)
 
         if device_setup.status != 'Active':
             skip(invoice, "TIMS Device Setup status is {0}, not Active.".format(
@@ -393,12 +399,18 @@ def parse_response(response):
     return data
 
 
+KRA_RESPONSE_SAVEPOINT = "tims_kra_response"
+
+
 def record_kra_response(data, invoice, payload):
     """
-    Persists the exchange. Runs in its own savepoint and swallows nothing quietly:
-    if the row cannot be written we still want the raw device reply in the Error Log,
-    otherwise a successful fiscalisation leaves no trace anywhere.
+    Persists the exchange inside a savepoint. This runs from the Sales Invoice
+    on_submit hook, so it must never call frappe.db.commit() (which would commit a
+    half-submitted invoice) or a bare frappe.db.rollback() (which would discard the
+    in-flight submission entirely). Rolling back to a savepoint undoes only a failed
+    insert, leaving the surrounding submit intact.
     """
+    frappe.db.savepoint(KRA_RESPONSE_SAVEPOINT)
     try:
         kra_response = frappe.get_doc({
             "doctype": "KRA Response",
@@ -413,10 +425,9 @@ def record_kra_response(data, invoice, payload):
             "payload_sent": str(payload)
         })
         kra_response.insert(ignore_permissions=True)
-        frappe.db.commit()
         return kra_response.name
     except Exception:
-        frappe.db.rollback()
+        frappe.db.rollback(save_point=KRA_RESPONSE_SAVEPOINT)
         frappe.log_error(
             title="TIMS KRA: could not record response",
             message="Invoice: {0}\n\nDevice reply:\n{1}\n\nPayload:\n{2}\n\n{3}".format(

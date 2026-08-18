@@ -19,7 +19,7 @@ def sales_invoice_on_submit(doc, method):
         
     try:
         from tims_integration.services.rest import send_request
-        send_request(doc.name)
+        send_request(doc.name, doc=doc)
         
     except Exception as e:
         frappe.log_error(
