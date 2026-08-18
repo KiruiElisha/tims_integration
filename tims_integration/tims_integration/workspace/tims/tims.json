@@ -1,0 +1,109 @@
+{
+ "app": "tims_integration",
+ "charts": [],
+ "content": "[{\"id\": \"timsHdr\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>TIMS</b></span>\", \"col\": 12}}, {\"id\": \"timsSub\", \"type\": \"header\", \"data\": {\"text\": \"<span style=\\\"color:#6b7280;font-size:13px\\\">KRA fiscalisation: device setup, submitted invoices and KRA responses</span>\", \"col\": 12}}, {\"id\": \"timsScHdr\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h6\\\">Shortcuts</span>\", \"col\": 12}}, {\"id\": \"timsSc1\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"TIMS Device Setup\", \"col\": 3}}, {\"id\": \"timsSc2\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"KRA Responses\", \"col\": 3}}, {\"id\": \"timsSc3\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Fiscalised Invoices\", \"col\": 3}}, {\"id\": \"timsSc4\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Not Sent to KRA\", \"col\": 3}}, {\"id\": \"timsLnkHdr\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h6\\\">Reference</span>\", \"col\": 12}}, {\"id\": \"timsCard1\", \"type\": \"card\", \"data\": {\"card_name\": \"Setup\", \"col\": 4}}, {\"id\": \"timsCard2\", \"type\": \"card\", \"data\": {\"card_name\": \"Fiscal Records\", \"col\": 4}}]",
+ "creation": "2026-08-18 10:00:00.000000",
+ "custom_blocks": [],
+ "docstatus": 0,
+ "doctype": "Workspace",
+ "for_user": "",
+ "hide_custom": 0,
+ "icon": "accounting",
+ "idx": 0,
+ "indicator_color": "green",
+ "is_hidden": 0,
+ "label": "TIMS",
+ "links": [
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Setup",
+   "link_count": 1,
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "TIMS Device Setup",
+   "link_count": 0,
+   "link_to": "TIMS Device Setup",
+   "link_type": "DocType",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Fiscal Records",
+   "link_count": 2,
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "KRA Response",
+   "link_count": 0,
+   "link_to": "KRA Response",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Sales Invoice",
+   "link_count": 0,
+   "link_to": "Sales Invoice",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  }
+ ],
+ "modified": "2026-08-18 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "TIMS Integration",
+ "name": "TIMS",
+ "number_cards": [],
+ "owner": "Administrator",
+ "parent_page": "",
+ "public": 1,
+ "quick_lists": [],
+ "roles": [],
+ "sequence_id": 1.0,
+ "shortcuts": [
+  {
+   "color": "Blue",
+   "doc_view": "",
+   "label": "TIMS Device Setup",
+   "link_to": "TIMS Device Setup",
+   "type": "DocType"
+  },
+  {
+   "color": "Grey",
+   "doc_view": "List",
+   "label": "KRA Responses",
+   "link_to": "KRA Response",
+   "type": "DocType"
+  },
+  {
+   "color": "Green",
+   "doc_view": "List",
+   "label": "Fiscalised Invoices",
+   "link_to": "Sales Invoice",
+   "type": "DocType",
+   "stats_filter": "{\"custom_sent_to_kra\": 1}"
+  },
+  {
+   "color": "Orange",
+   "doc_view": "List",
+   "label": "Not Sent to KRA",
+   "link_to": "Sales Invoice",
+   "type": "DocType",
+   "stats_filter": "{\"custom_sent_to_kra\": 0, \"docstatus\": 1}"
+  }
+ ],
+ "title": "TIMS",
+ "type": "Workspace"
+}

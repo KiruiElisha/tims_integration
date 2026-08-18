@@ -244,6 +244,17 @@ fixtures = [
     # then competes with those module definitions on every migrate.
 ]
 
+# Tile on the /apps screen, opening the TIMS workspace.
+add_to_apps_screen = [
+    {
+        "name": "tims_integration",
+        "logo": "/assets/tims_integration/images/tims-logo.svg",
+        "title": "TIMS",
+        "route": "/app/tims",
+    }
+]
+
+
 # sales_invoice.js is a Sales Invoice form script, so it belongs in doctype_js only.
 # It was also listed in app_include_js, which loads it on every desk page and
 # registers the refresh handler a second time.
