@@ -1,7 +1,7 @@
 import frappe
 import json
 import requests
-from frappe.utils import today
+from frappe.utils import getdate
 from datetime import datetime
 
 @frappe.whitelist()
@@ -50,9 +50,10 @@ def skip(invoice, reason):
 
 
 def is_valid_posting_date(doc, device_setup):
-    today = datetime.now().strftime("%d-%m-%Y")
-    posting_date = doc.posting_date.strftime("%d-%m-%Y")
-    return posting_date == today or device_setup.allow_other_day_posting
+    if device_setup.allow_other_day_posting:
+        return True
+
+    return getdate(doc.posting_date) == getdate()
 
 
 def build_payload(doc, device_setup):
@@ -60,7 +61,7 @@ def build_payload(doc, device_setup):
     # Blank unless a till is explicitly configured: the device prefixes a set till
     # (e.g. "01") to the invoice number on the fiscal receipt.
     till_no = str(device_setup.till_number or "").strip()
-    rct_no = doc.name
+    rct_no = get_rct_no(doc)
     customer_pin = get_customer_pin(doc)
     invoice_items = get_invoice_items(doc.name)
     default_tax = get_default_invoice_tax(doc.name)
@@ -80,6 +81,36 @@ def build_payload(doc, device_setup):
 
     payload = create_payload(doc, vat_values, items, payment_method, customer_pin, till_no, rct_no)
     return payload
+
+
+RCT_NO_MAX_LENGTH = 18
+
+
+def get_rct_no(doc):
+    """
+    The receipt number reported to KRA. The device rejects anything longer than 18
+    characters ("Invoice/Receipt # cannot be more than 18 Characters"), and the
+    default ERPNext series already exceeds that: ACC-SINV-2026-00554 is 19.
+
+    Separators are dropped first, since that keeps the whole number intact and stays
+    unique. Only if that is still too long do we keep the trailing characters, which
+    carry the counter.
+    """
+    name = doc.name
+    if len(name) <= RCT_NO_MAX_LENGTH:
+        return name
+
+    compact = "".join(c for c in name if c.isalnum())
+    rct_no = compact if len(compact) <= RCT_NO_MAX_LENGTH else compact[-RCT_NO_MAX_LENGTH:]
+
+    frappe.log_error(
+        title="TIMS KRA: receipt number shortened",
+        message="{0} is {1} characters, over the {2} the device accepts; "
+                "reported to KRA as {3}.".format(
+                    name, len(name), RCT_NO_MAX_LENGTH, rct_no)
+    )
+
+    return rct_no
 
 
 def get_customer_pin(doc):
@@ -347,6 +378,8 @@ def send_payload(payload, invoice, doc):
 
 
 SIGNING_TIME_FORMATS = (
+    # The device returns minute precision: "2026-08-18 14:04".
+    "%Y-%m-%d %H:%M",
     "%Y-%m-%d %H:%M:%S",
     "%Y-%m-%dT%H:%M:%S",
     "%d/%m/%Y %H:%M:%S",

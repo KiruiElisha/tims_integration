@@ -9,9 +9,13 @@ frappe.ui.form.on('Sales Invoice', {
 
         // Show TIMS status in the dashboard
         if (frm.doc.custom_sent_to_kra) {
-            let status_color = frm.doc.custom_tims_response_code === '000' ? 'green' : 'red';
-            let status_message = frm.doc.custom_tims_response_code === '000' ? 
-                'Successfully sent to TIMS' : 
+            // KRA returns a zero-padded code, but the field held an Int on older
+            // installs, so '000' can have been stored as 0. Compare numerically.
+            let code = parseInt(frm.doc.custom_tims_response_code, 10);
+            let succeeded = code === 0;
+            let status_color = succeeded ? 'green' : 'red';
+            let status_message = succeeded ?
+                'Successfully sent to TIMS' :
                 'Failed to send to TIMS';
 
             frm.dashboard.add_indicator(

@@ -680,7 +680,7 @@
   "columns": 0,
   "default": null,
   "depends_on": null,
-  "description": null,
+  "description": "KRA response code. 000 (success) is stored as 0: Frappe refuses to convert this field from Int to Data, so the zero-padded string is kept on the KRA Response record.",
   "docstatus": 0,
   "doctype": "Custom Field",
   "dt": "Sales Invoice",
