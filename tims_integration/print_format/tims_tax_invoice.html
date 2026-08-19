@@ -1,0 +1,262 @@
+{%- set is_return = doc.is_return -%}
+{%- set title = "CREDIT NOTE" if is_return else "TAX INVOICE" -%}
+{%- set cur = doc.currency -%}
+{%- set sign = -1 if is_return else 1 -%}
+
+{%- macro money(v) -%}
+{{ frappe.utils.fmt_money(frappe.utils.flt(v) * sign, currency=cur) }}
+{%- endmacro -%}
+
+{%- set bands = [
+    ("A", "16%",         doc.custom_taxbl_amount_a, doc.custom_tax_a),
+    ("B", "8%",          doc.custom_taxbl_amount_b, doc.custom_tax_b),
+    ("C", "10%",         doc.custom_taxbl_amount_c, doc.custom_tax_c),
+    ("D", "2%",          doc.custom_taxbl_amount_d, doc.custom_tax_d),
+    ("E", "Zero Rated",  doc.custom_taxbl_amount_e, doc.custom_tax_e)
+] -%}
+
+<table width="100%" cellpadding="0" cellspacing="0" border="0"
+       style="font-family:Helvetica,Arial,sans-serif;font-size:11px;color:#000;">
+
+  <!-- ============ TITLE ============ -->
+  <tr>
+    <td align="center" style="padding:0 0 8px 0;">
+      <table width="100%" cellpadding="0" cellspacing="0" border="0">
+        <tr>
+          <td align="center" style="border-top:2px solid #000;border-bottom:2px solid #000;padding:6px 0;">
+            <span style="font-size:16px;font-weight:bold;letter-spacing:2px;">{{ title }}</span>
+            {% if doc.custom_sent_to_kra %}
+              <br><span style="font-size:9px;letter-spacing:1px;">FISCAL RECEIPT &mdash; KRA TIMS</span>
+            {% endif %}
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+
+  <!-- ============ PARTIES / META ============ -->
+  <tr>
+    <td style="padding:0 0 8px 0;">
+      <table width="100%" cellpadding="4" cellspacing="0" border="0"
+             style="border:1px solid #000;border-collapse:collapse;">
+        <tr>
+          <td width="55%" valign="top" style="border-right:1px solid #000;">
+            <b>{{ _("Billed To") }}</b><br>
+            <b>{{ doc.customer_name or doc.customer }}</b><br>
+            {%- if doc.address_display %}{{ doc.address_display }}{% endif -%}
+            {%- if doc.tax_id %}<br>{{ _("PIN") }}: <b>{{ doc.tax_id }}</b>{% endif -%}
+          </td>
+          <td width="45%" valign="top">
+            <table width="100%" cellpadding="1" cellspacing="0" border="0" style="font-size:11px;">
+              <tr>
+                <td width="45%">{{ _("Invoice No") }}</td>
+                <td><b>{{ doc.name }}</b></td>
+              </tr>
+              <tr>
+                <td>{{ _("Date") }}</td>
+                <td>{{ frappe.utils.formatdate(doc.posting_date, "dd-MM-yyyy") }}</td>
+              </tr>
+              <tr>
+                <td>{{ _("Time") }}</td>
+                <td>{{ doc.posting_time }}</td>
+              </tr>
+              {% if is_return and doc.return_against %}
+              <tr>
+                <td>{{ _("Against") }}</td>
+                <td>{{ doc.return_against }}</td>
+              </tr>
+              {% endif %}
+              <tr>
+                <td>{{ _("Currency") }}</td>
+                <td>{{ cur }}</td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+
+  <!-- ============ ITEMS ============ -->
+  <tr>
+    <td style="padding:0 0 8px 0;">
+      <table width="100%" cellpadding="4" cellspacing="0" border="0"
+             style="border:1px solid #000;border-collapse:collapse;">
+        <thead>
+          <tr style="background:#eee;">
+            <th width="4%"  align="center" style="border:1px solid #000;">#</th>
+            <th width="42%" align="left"   style="border:1px solid #000;">{{ _("Description") }}</th>
+            <th width="8%"  align="center" style="border:1px solid #000;">{{ _("Tax") }}</th>
+            <th width="10%" align="right"  style="border:1px solid #000;">{{ _("Qty") }}</th>
+            <th width="8%"  align="center" style="border:1px solid #000;">{{ _("UOM") }}</th>
+            <th width="14%" align="right"  style="border:1px solid #000;">{{ _("Rate") }}</th>
+            <th width="14%" align="right"  style="border:1px solid #000;">{{ _("Amount") }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in doc.items %}
+          <tr>
+            <td align="center" style="border:1px solid #000;">{{ loop.index }}</td>
+            <td style="border:1px solid #000;">
+              <b>{{ item.item_name }}</b>
+              {%- if item.item_code != item.item_name %}<br><span style="font-size:9px;">{{ item.item_code }}</span>{% endif -%}
+            </td>
+            <td align="center" style="border:1px solid #000;">{{ doc.custom_taxation_type or "-" }}</td>
+            <td align="right"  style="border:1px solid #000;">{{ frappe.utils.flt(item.qty) * sign }}</td>
+            <td align="center" style="border:1px solid #000;">{{ item.uom }}</td>
+            <td align="right"  style="border:1px solid #000;">{{ frappe.utils.fmt_money(item.rate, currency=cur) }}</td>
+            <td align="right"  style="border:1px solid #000;">{{ money(item.amount) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </td>
+  </tr>
+
+  <!-- ============ VAT BREAKDOWN + TOTALS ============ -->
+  <tr>
+    <td style="padding:0 0 8px 0;">
+      <table width="100%" cellpadding="0" cellspacing="0" border="0">
+        <tr>
+          <td width="52%" valign="top" style="padding-right:6px;">
+            <table width="100%" cellpadding="4" cellspacing="0" border="0"
+                   style="border:1px solid #000;border-collapse:collapse;">
+              <tr style="background:#eee;">
+                <th align="left"  style="border:1px solid #000;">{{ _("VAT Band") }}</th>
+                <th align="right" style="border:1px solid #000;">{{ _("Taxable") }}</th>
+                <th align="right" style="border:1px solid #000;">{{ _("VAT") }}</th>
+              </tr>
+              {% for code, label, taxable, vat in bands %}
+                {% if frappe.utils.flt(taxable) or frappe.utils.flt(vat) %}
+                <tr>
+                  <td style="border:1px solid #000;">{{ code }} &mdash; {{ label }}</td>
+                  <td align="right" style="border:1px solid #000;">{{ money(taxable) }}</td>
+                  <td align="right" style="border:1px solid #000;">{{ money(vat) }}</td>
+                </tr>
+                {% endif %}
+              {% endfor %}
+            </table>
+          </td>
+
+          <td width="48%" valign="top">
+            <table width="100%" cellpadding="4" cellspacing="0" border="0"
+                   style="border:1px solid #000;border-collapse:collapse;">
+              <tr>
+                <td style="border:1px solid #000;">{{ _("Net Total") }}</td>
+                <td align="right" style="border:1px solid #000;">{{ money(doc.net_total) }}</td>
+              </tr>
+              {% for tax in doc.taxes %}
+              <tr>
+                <td style="border:1px solid #000;">{{ tax.description }}</td>
+                <td align="right" style="border:1px solid #000;">{{ money(tax.tax_amount) }}</td>
+              </tr>
+              {% endfor %}
+              {% if doc.discount_amount %}
+              <tr>
+                <td style="border:1px solid #000;">{{ _("Discount") }}</td>
+                <td align="right" style="border:1px solid #000;">- {{ money(doc.discount_amount) }}</td>
+              </tr>
+              {% endif %}
+              <tr style="background:#eee;">
+                <td style="border:1px solid #000;"><b>{{ _("Grand Total") }}</b></td>
+                <td align="right" style="border:1px solid #000;"><b>{{ money(doc.grand_total) }}</b></td>
+              </tr>
+              {% if not doc.disable_rounded_total and doc.rounded_total %}
+              <tr>
+                <td style="border:1px solid #000;">{{ _("Rounded Total") }}</td>
+                <td align="right" style="border:1px solid #000;">{{ money(doc.rounded_total) }}</td>
+              </tr>
+              {% endif %}
+            </table>
+
+            {% if doc.in_words %}
+            <table width="100%" cellpadding="4" cellspacing="0" border="0"
+                   style="border:1px solid #000;border-collapse:collapse;margin-top:4px;">
+              <tr>
+                <td style="font-size:10px;"><i>{{ doc.in_words }}</i></td>
+              </tr>
+            </table>
+            {% endif %}
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+
+  <!-- ============ KRA FISCAL BLOCK ============ -->
+  {% if doc.custom_sent_to_kra %}
+  <tr>
+    <td style="padding:0 0 8px 0;">
+      <table width="100%" cellpadding="6" cellspacing="0" border="0"
+             style="border:2px solid #000;border-collapse:collapse;">
+        <tr>
+          <td colspan="2" align="center"
+              style="border-bottom:1px solid #000;background:#eee;font-weight:bold;letter-spacing:1px;">
+            {{ _("KRA FISCAL DETAILS") }}
+          </td>
+        </tr>
+        <tr>
+          <td width="68%" valign="top" style="border-right:1px solid #000;">
+            <table width="100%" cellpadding="2" cellspacing="0" border="0" style="font-size:11px;">
+              <tr>
+                <td width="42%">{{ _("CU Invoice No") }} (CUIN)</td>
+                <td><b>{{ doc.custom_cuin or "-" }}</b></td>
+              </tr>
+              <tr>
+                <td>{{ _("CU Serial No") }} (CUSN)</td>
+                <td>{{ doc.custom_cusn or "-" }}</td>
+              </tr>
+              <tr>
+                <td>{{ _("Trader Invoice No") }} (TSIN)</td>
+                <td>{{ doc.custom_tsin or "-" }}</td>
+              </tr>
+              <tr>
+                <td>{{ _("Signing Time") }}</td>
+                <td>{{ frappe.utils.formatdate(doc.custom_kra_signing_time, "dd-MM-yyyy") if doc.custom_kra_signing_time else "-" }}</td>
+              </tr>
+              <tr>
+                <td>{{ _("Taxation Type") }}</td>
+                <td>{{ doc.custom_taxation_type or "-" }}</td>
+              </tr>
+            </table>
+          </td>
+
+          <td width="32%" align="center" valign="middle">
+            {% if doc.custom_kra_qr_code_data %}
+              <img src="https://api.qrserver.com/v1/create-qr-code/?size=150x150&margin=0&data={{ doc.custom_kra_qr_code_data | urlencode }}"
+                   width="110" height="110" alt="KRA QR Code"
+                   style="display:block;margin:0 auto;">
+              <div style="font-size:8px;margin-top:3px;">{{ _("Scan to verify on iTax") }}</div>
+            {% else %}
+              <div style="font-size:9px;">{{ _("No QR code returned") }}</div>
+            {% endif %}
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+  {% else %}
+  <tr>
+    <td align="center" style="padding:6px;border:1px dashed #000;font-size:10px;">
+      {{ _("NOT FISCALISED &mdash; this document has not been transmitted to KRA") }}
+    </td>
+  </tr>
+  {% endif %}
+
+  <!-- ============ FOOTER ============ -->
+  <tr>
+    <td style="padding-top:6px;">
+      <table width="100%" cellpadding="2" cellspacing="0" border="0" style="font-size:9px;">
+        <tr>
+          <td align="left" width="50%">
+            {% if doc.remarks and doc.remarks != "No Remarks" %}{{ doc.remarks }}{% endif %}
+          </td>
+          <td align="right" width="50%">
+            {{ _("Printed") }}: {{ frappe.utils.format_datetime(frappe.utils.now(), "dd-MM-yyyy HH:mm") }}
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+
+</table>
