@@ -238,6 +238,12 @@ fixtures = [
             ["doc_type", "=", "Sales Invoice"]
         ]
     },
+    {
+        "dt": "Print Format",
+        "filters": [
+            ["name", "in", ["Tax Invoice KRA"]]
+        ]
+    },
     # KRA Response and TIMS Device Setup are this app's own DocTypes: they live in
     # tims_integration/tims_integration/doctype/ and are created by bench migrate.
     # Exporting them as fixtures too makes export-fixtures write a doctype.json that
