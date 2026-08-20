@@ -250,6 +250,17 @@ fixtures = [
     # then competes with those module definitions on every migrate.
 ]
 
+# Helpers the KRA print format calls. Per-line tax cannot be derived in Jinja
+# alone: it has to fall back through Item Wise Tax Detail, the item's own tax
+# template, and finally the invoice tax rows.
+jinja = {
+    "methods": [
+        "tims_integration.utils.print_format.get_line_taxes",
+        "tims_integration.utils.print_format.get_line_discount",
+    ]
+}
+
+
 # Tile on the /apps screen, opening the TIMS workspace.
 add_to_apps_screen = [
     {
