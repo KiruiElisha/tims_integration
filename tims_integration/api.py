@@ -1,5 +1,70 @@
 import frappe
 from frappe import _
+from frappe.utils import cint, flt
+
+
+def sales_invoice_validate(doc, method=None):
+    """
+    Catch at validate time what would otherwise surface as a device rejection or,
+    worse, as a silently wrong credit note.
+    """
+    tims_settings = frappe.get_single('TIMS Device Setup')
+    if not tims_settings.send_invoices_to_kra_on_submit:
+        return
+
+    if not doc.get("is_return") or not tims_settings.send_credit_notes:
+        return
+
+    from tims_integration.services.rest import ADJUSTMENT_PRICE, original_invoice_of
+
+    original = original_invoice_of(doc)
+    if not original:
+        frappe.throw(_("Set 'TIMS Original Invoice' (or 'Return Against') so TIMS "
+                       "can be told which invoice this credit note adjusts."))
+
+    if doc.get("custom_tims_adjustment_type") == ADJUSTMENT_PRICE:
+        validate_price_adjustment(doc, original)
+
+
+def validate_price_adjustment(doc, original):
+    """
+    A price adjustment moves money, not goods.
+
+    update_stock must be off or ERPNext brings the goods back into stock and
+    credits COGS for a return that never happened. return_against must be blank
+    or ERPNext charges this against the original invoice's return quantity and
+    refuses the next adjustment - which is the whole problem this type exists to
+    solve, since prices keep moving and one invoice needs adjusting repeatedly.
+    """
+    if doc.get("update_stock"):
+        frappe.throw(_("A Price Adjustment must have 'Update Stock' off: no goods "
+                       "are returned, so stock and COGS must not move."))
+
+    if doc.return_against:
+        frappe.throw(_("A Price Adjustment must leave 'Return Against' blank and use "
+                       "'TIMS Original Invoice' instead. ERPNext counts a return "
+                       "against the original invoice's quantity, which would block "
+                       "every later adjustment."))
+
+    from tims_integration.services.allowance import summary
+
+    headroom = summary(original)
+    if not headroom:
+        frappe.throw(_("{0} has no accepted TIMS sale recorded, so nothing can be "
+                       "adjusted against it yet.").format(original))
+
+    requested = abs(flt(doc.base_grand_total))
+    available = float(headroom["remaining_amount"])
+    if requested > available + 0.01:
+        # Crediting more than was invoiced is wrong as accounting, whatever the
+        # device would accept. Quantity is only warned about - see services.credit.
+        frappe.throw(
+            _("This adjustment is {0} but {1} has only {2} left to credit "
+              "({3} of {4} already credited).").format(
+                requested, original, round(available, 2),
+                round(float(headroom["credited_amount"]), 2),
+                round(float(headroom["original_amount"]), 2)),
+            title=_("Exceeds TIMS Credit Allowance"))
 
 def sales_invoice_on_submit(doc, method):
     """Handle TIMS submission on Sales Invoice submit"""
@@ -23,8 +88,12 @@ def sales_invoice_on_submit(doc, method):
         return
 
     try:
-        send_request(doc.name, doc=doc)
-        
+        # A caller that already showed the user a preview and got explicit
+        # confirmation (the Price Adjustment modal) sets this flag before
+        # calling submit(), so this attempt sends immediately instead of
+        # gating on concerns the user has already seen and accepted.
+        send_request(doc.name, doc=doc, confirmed=cint(doc.flags.get("tims_confirmed_send")))
+
     except Exception as e:
         frappe.log_error(
             title="Failed to send invoice to TIMS",

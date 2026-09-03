@@ -67,8 +67,10 @@ app_license = "mit"
 # Installation
 # ------------
 
-# before_install = "tims_integration.install.before_install"
-# after_install = "tims_integration.install.after_install"
+after_install = "tims_integration.install.after_install"
+# Custom fields are reconciled on every migrate, so a site that predates them
+# still ends up with the fields the code expects.
+after_migrate = "tims_integration.install.after_migrate"
 
 # Uninstallation
 # ------------
@@ -124,6 +126,7 @@ app_license = "mit"
 
 doc_events = {
     "Sales Invoice": {
+        "validate": "tims_integration.api.sales_invoice_validate",
         "on_submit": "tims_integration.api.sales_invoice_on_submit"
     }
 }
@@ -225,13 +228,12 @@ doc_events = {
 # 	"Logging DocType Name": 30  # days to retain logs
 # }
 
+# Custom Fields are created by install.setup(), not exported here. The filter this
+# used to carry - ["name", "like", "Sales Invoice-custom_%"] - matches ANY app's
+# custom fields on Sales Invoice, so the exported file ended up holding another
+# app's fields and none of this app's. A fresh install then got no TIMS fields at
+# all, which is exactly what rest.check_setup() reports as missing_custom_fields.
 fixtures = [
-    {
-        "dt": "Custom Field",
-        "filters": [
-            ["name", "like", "Sales Invoice-custom_%"]
-        ]
-    },
     {
         "dt": "Property Setter",
         "filters": [
