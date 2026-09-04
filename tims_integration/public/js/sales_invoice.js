@@ -206,7 +206,7 @@ function show_price_adjustment_dialog(frm, allowance) {
         item_code_by_desc[it.description || it.item_name || it.item_code] = it.item_code;
     });
 
-    const creditable = (allowance.lines || []).filter(line => flt(line.remaining_amount) > 0);
+    const creditable = (allowance.lines || []).filter(line => flt(line.remaining_amount) > 0 && flt(line.remaining_qty) > 0);
 
     if (!creditable.length) {
         frappe.msgprint(__('No item on this invoice has any TIMS credit remaining.'));
@@ -216,11 +216,20 @@ function show_price_adjustment_dialog(frm, allowance) {
     const fields = [{ fieldtype: 'HTML', fieldname: 'allowance_summary' }];
     creditable.forEach((line, i) => {
         fields.push({
+            fieldtype: 'Float',
+            fieldname: 'qty_' + i,
+            label: __('{0} - Quantity', [line.description]),
+            description: __('Originally invoiced as {0} @ {1}. Up to {2} is still available to declare.', [
+                line.original_qty, money(line.unit_price), line.remaining_qty
+            ]),
+            default: 0
+        });
+        fields.push({
             fieldtype: 'Currency',
-            fieldname: 'amount_' + i,
-            label: __('{0} - Amount to Refund', [line.description]),
-            description: __('Originally invoiced at {0} ({1} @ {2}). Up to {3} of that is still available to credit.', [
-                money(line.original_amount), line.original_qty, money(line.unit_price), money(line.remaining_amount)
+            fieldname: 'discount_' + i,
+            label: __('{0} - Discount', [line.description]),
+            description: __('Total discount off that quantity, at the original unit price. Up to {0} is still available to credit for this item.', [
+                money(line.remaining_amount)
             ]),
             default: 0
         });
@@ -234,16 +243,19 @@ function show_price_adjustment_dialog(frm, allowance) {
         primary_action(values) {
             const items = [];
             creditable.forEach((line, i) => {
-                const amt = flt(values['amount_' + i]);
-                if (amt > 0) {
+                const qty = flt(values['qty_' + i]);
+                if (qty > 0) {
                     items.push({
                         item_code: item_code_by_desc[line.description] || line.description,
-                        amount: amt
+                        description: line.description,
+                        unit_price: flt(line.unit_price),
+                        qty: qty,
+                        discount: flt(values['discount_' + i])
                     });
                 }
             });
             if (!items.length) {
-                frappe.msgprint(__('Enter an amount to credit for at least one item.'));
+                frappe.msgprint(__('Enter a quantity to credit for at least one item.'));
                 return;
             }
             d.hide();
@@ -259,7 +271,7 @@ function show_price_adjustment_dialog(frm, allowance) {
         <div class="alert alert-info">
             <b>${__('This is a price concession, not a return.')}</b>
             <div style="margin-top:4px">
-                ${__('Enter how much money you are giving back to the customer for each item - not the new price. For example, if you agreed to knock KES 200 off an item, enter 200, not the reduced price. No goods or stock are affected.')}
+                ${__('Enter the real quantity and total discount you agreed with the customer for each item - not a target refund amount. Both are declared to TIMS exactly as entered. No goods or stock are affected.')}
             </div>
             <div style="margin-top:8px">
                 ${__('So far on {0}: {1} originally invoiced, {2} already credited, {3} still available to credit.', [
@@ -299,10 +311,16 @@ function create_and_preview_price_adjustment(frm, items, allowance) {
 }
 
 function build_price_adjustment_summary_html(items, allowance) {
-    const total = items.reduce((sum, it) => sum + flt(it.amount), 0);
-    const rows = items.map(it => `
+    const with_amount = items.map(it => Object.assign({}, it, {
+        amount: flt(it.unit_price) * flt(it.qty) - flt(it.discount)
+    }));
+    const total = with_amount.reduce((sum, it) => sum + it.amount, 0);
+    const rows = with_amount.map(it => `
         <tr>
-            <td>${frappe.utils.escape_html(it.item_code)}</td>
+            <td>${frappe.utils.escape_html(it.description || it.item_code)}</td>
+            <td class="text-right">${it.qty}</td>
+            <td class="text-right">${money(it.unit_price)}</td>
+            <td class="text-right">${money(it.discount)}</td>
             <td class="text-right">${money(it.amount)}</td>
         </tr>`).join('');
     const remaining_after = flt(allowance.remaining_amount) - total;
@@ -311,18 +329,21 @@ function build_price_adjustment_summary_html(items, allowance) {
         <div class="alert alert-warning" style="margin-bottom:12px">
             <b>${__('Price Adjustment Summary')}</b>
             <div style="margin:4px 0 8px">
-                ${__('This refunds/adjusts {0} against {1} - no goods are returned, only the price is reduced.', [
-                    `<b>${money(total)}</b>`, allowance.invoice
+                ${__('This declares exactly the quantity and discount entered below against {0} - no goods are returned, only the price is reduced.', [
+                    allowance.invoice
                 ])}
             </div>
             <table class="table table-bordered" style="margin:0">
                 <thead><tr>
                     <th>${__('Item')}</th>
-                    <th class="text-right">${__('Amount Being Credited')}</th>
+                    <th class="text-right">${__('Qty')}</th>
+                    <th class="text-right">${__('Unit Price')}</th>
+                    <th class="text-right">${__('Discount')}</th>
+                    <th class="text-right">${__('Net Credited')}</th>
                 </tr></thead>
                 <tbody>${rows}</tbody>
                 <tfoot><tr>
-                    <td><b>${__('Total Credited in This Adjustment')}</b></td>
+                    <td colspan="4"><b>${__('Total Credited in This Adjustment')}</b></td>
                     <td class="text-right"><b>${money(total)}</b></td>
                 </tr></tfoot>
             </table>

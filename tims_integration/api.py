@@ -46,7 +46,7 @@ def validate_price_adjustment(doc, original):
                        "against the original invoice's quantity, which would block "
                        "every later adjustment."))
 
-    from tims_integration.services.allowance import summary
+    from tims_integration.services.allowance import remaining, summary
 
     headroom = summary(original)
     if not headroom:
@@ -56,8 +56,6 @@ def validate_price_adjustment(doc, original):
     requested = abs(flt(doc.base_grand_total))
     available = float(headroom["remaining_amount"])
     if requested > available + 0.01:
-        # Crediting more than was invoiced is wrong as accounting, whatever the
-        # device would accept. Quantity is only warned about - see services.credit.
         frappe.throw(
             _("This adjustment is {0} but {1} has only {2} left to credit "
               "({3} of {4} already credited).").format(
@@ -65,6 +63,23 @@ def validate_price_adjustment(doc, original):
                 round(float(headroom["credited_amount"]), 2),
                 round(float(headroom["original_amount"]), 2)),
             title=_("Exceeds TIMS Credit Allowance"))
+
+    # Quantity is its own budget on the TIMS device (E219/E220): a line can
+    # decline more than is left even when the money total above still fits.
+    per_line = remaining(original)
+    for item in doc.items:
+        entry = per_line.get(item.item_name)
+        qty = abs(flt(item.get("custom_tims_declared_qty")) or item.qty)
+        if not entry:
+            frappe.throw(_("{0} has no accepted TIMS sale recorded for '{1}', so nothing can be "
+                           "adjusted against it.").format(original, item.item_name))
+        if qty > float(entry["remaining_qty"]) + 0.01:
+            frappe.throw(
+                _("This adjustment declares {0} of {1} but only {2} is left to credit "
+                  "against {3} ({4} of {5} already credited).").format(
+                    qty, item.item_name, round(float(entry["remaining_qty"]), 2), original,
+                    round(float(entry["credited_qty"]), 2), round(float(entry["original_qty"]), 2)),
+                title=_("Exceeds TIMS Quantity Allowance"))
 
 def sales_invoice_on_submit(doc, method):
     """Handle TIMS submission on Sales Invoice submit"""

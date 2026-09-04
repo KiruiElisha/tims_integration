@@ -18,7 +18,6 @@
   "allow_other_day_posting",
   "send_invoices_to_kra_on_submit",
   "send_credit_notes",
-  "price_adjustment_encoding",
   "allow_submission_on_failure"
  ],
  "fields": [
@@ -96,14 +95,6 @@
    "fieldname": "send_credit_notes",
    "fieldtype": "Check",
    "label": "Send Credit Notes To KRA"
-  },
-  {
-   "default": "Original Price & Fractional Quantity",
-   "description": "How a Price Adjustment refund line is expressed. TIMS declares the amounts in the top-level VAT bands and its line schema has no amount field, so a zero-quantity line still carries the full credit - which is the more honest shape, since no goods moved. Fractional Quantity keeps the line self-consistent and matches what the eTIMS app must send. Zero Quantity is TIMS-only: eTIMS rejects it (E322/E341).",
-   "fieldname": "price_adjustment_encoding",
-   "fieldtype": "Select",
-   "label": "Price Adjustment Encoding",
-   "options": "Original Price & Fractional Quantity\nZero Quantity"
   },
   {
    "default": "0",

@@ -159,6 +159,29 @@ for _band in "abcde":
 		]
 	)
 
+CUSTOM_FIELDS["Sales Invoice Item"] = [
+	{
+		"fieldname": "custom_tims_declared_qty",
+		"label": "TIMS Declared Qty",
+		"fieldtype": "Float",
+		"insert_after": "qty",
+		"no_copy": 1,
+		"print_hide": 1,
+		"description": "The real quantity declared to TIMS for this Price Adjustment line, entered by "
+		"the user - independent of 'Qty', which stays -1 for the return accounting.",
+	},
+	{
+		"fieldname": "custom_tims_discount",
+		"label": "TIMS Discount",
+		"fieldtype": "Currency",
+		"insert_after": "custom_tims_declared_qty",
+		"no_copy": 1,
+		"print_hide": 1,
+		"description": "Total discount declared to TIMS for this Price Adjustment line, entered by "
+		"the user and sent as-is - not recalculated.",
+	},
+]
+
 
 def after_install():
 	setup()

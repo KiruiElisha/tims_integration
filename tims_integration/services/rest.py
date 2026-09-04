@@ -150,10 +150,10 @@ def build_payload(doc, device_setup):
     items = []
     unclassified = []
 
-    # A price adjustment is re-encoded against what the original invoice actually
-    # declared, so the headroom is loaded once before the lines are built.
+    # A price adjustment line is declared verbatim against what the original
+    # invoice actually declared, so the headroom is loaded once before the
+    # lines are built.
     adjustment = get_adjustment_allowance(doc)
-    adjustment_encoding = get_adjustment_encoding(device_setup) if adjustment is not None else None
 
     for item in invoice_items:
         tax_title = item.tax_title
@@ -165,14 +165,7 @@ def build_payload(doc, device_setup):
             item, tax_title, tax_rate)
 
         if adjustment is not None:
-            # A return line's taxable_amount/tax_amount are negative (qty is -1
-            # by ERPNext's return convention); encode() takes a magnitude to
-            # credit, not a signed delta, so the sign is dropped here rather
-            # than inside it - encode() has no way to know which sign convention
-            # a caller used, so treating <= 0 as "nothing to credit" is correct
-            # for a caller that does pass a signed amount.
-            new_item = encode_adjustment_line(
-                new_item, abs(taxable_amount + tax_amount), adjustment, adjustment_encoding)
+            new_item = encode_declared_adjustment_line(new_item, item, adjustment)
 
         vat_values = update_vat_values(vat_values, category, taxable_amount, tax_amount)
         items.append(new_item)
@@ -236,6 +229,7 @@ def get_invoice_items(invoice):
     query = """
         SELECT sii.name, sii.item_code, sii.item_name, sii.rate, sii.base_rate, sii.base_amount,
         sii.base_net_rate, sii.base_net_amount, sii.qty, sii.item_tax_template,
+        sii.custom_tims_declared_qty, sii.custom_tims_discount,
         it_template.title AS tax_title, it_template_detail.tax_rate AS tax_rate
         FROM `tabSales Invoice Item` sii
         LEFT JOIN `tabItem Tax Template` it_template ON it_template.name = sii.item_tax_template
@@ -370,56 +364,32 @@ def get_adjustment_allowance(doc):
     return remaining(original_invoice_of(doc)) or {}
 
 
-def get_adjustment_encoding(device_setup=None):
+def encode_declared_adjustment_line(new_item, item, allowance):
     """
-    Which line shape this device wants for a price adjustment. Defaults to the
-    fractional quantity: it is the conservative choice and the only one eTIMS
-    would accept, so a site that never changes the setting stays portable.
+    Declare one refund line exactly as the user entered it: the quantity and
+    discount they typed for this Price Adjustment line (custom_tims_declared_qty
+    / custom_tims_discount, set by create_price_adjustment), at the unit price
+    the original invoice actually declared to TIMS. Nothing here is derived or
+    recalculated - qty and discount are sent verbatim.
+
+    A line with no declared quantity (a hand-built return, or one predating this
+    field) is left exactly as ERPNext built it: the figures are still correct,
+    only unoptimised, and refusing to send would be worse than sending a line
+    the device accepts anyway.
     """
-    from tims_integration.services.credit import ENCODING_FRACTIONAL
-
-    if device_setup is None:
-        device_setup = frappe.get_single('TIMS Device Setup')
-    return device_setup.get("price_adjustment_encoding") or ENCODING_FRACTIONAL
-
-
-def encode_adjustment_line(new_item, gross, allowance, encoding=None):
-    """
-    Re-encode one refund line at the *original* unit price, moving the adjustment
-    into a fractional quantity.
-
-    Charging the original price rather than a reduced one minimises the quantity
-    the refund consumes, which is what allows an invoice to be adjusted again as
-    prices keep moving. A device set to Zero Quantity instead sends no quantity
-    at all: TIMS declares the money in the top-level VAT bands and its line
-    schema has no amount field, so the line does not need to carry it. See
-    tims_integration.services.credit for both, and for why only the first can be
-    used on eTIMS.
-
-    Either encoding declares the same amount. The VAT bands and the payload total
-    are computed from the ERPNext line before this runs and are never touched
-    here, so the choice changes the shape of the line and nothing else.
-
-    A line with no match on the original is left exactly as ERPNext built it: the
-    figures are still correct, only the encoding is unoptimised, and refusing to
-    send would be a worse outcome than sending a line the device accepts anyway.
-    """
-    from tims_integration.services.credit import encode_for
+    declared_qty = abs(flt(item.get("custom_tims_declared_qty")))
+    if not declared_qty:
+        return new_item
 
     entry = allowance.get(str(new_item.get("productDesc") or "").strip()) \
         or allowance.get(str(new_item.get("productCode") or "").strip())
-    if not entry or entry["unit_price"] <= 0:
-        return new_item
-
-    try:
-        unit_price, quantity, discount = encode_for(encoding, gross, entry["unit_price"])
-    except (ValueError, ArithmeticError):
+    if not entry or flt(entry["unit_price"]) <= 0:
         return new_item
 
     new_item = dict(new_item)
-    new_item["unitPrice"] = float(unit_price)
-    new_item["quantity"] = float(quantity)
-    new_item["discount"] = float(discount)
+    new_item["unitPrice"] = float(entry["unit_price"])
+    new_item["quantity"] = float(declared_qty)
+    new_item["discount"] = float(abs(flt(item.get("custom_tims_discount"))))
     return new_item
 
 
@@ -427,8 +397,8 @@ def encode_adjustment_line(new_item, gross, allowance, encoding=None):
 def create_price_adjustment(original_invoice, items):
     """
     Build a *draft* Price Adjustment credit note against ``original_invoice``
-    from a set of per-item amounts, so the "TIMS" button on the invoice can offer
-    this without the user hand-building a return.
+    from a set of per-item quantities and discounts, so the "TIMS" button on the
+    invoice can offer this without the user hand-building a return.
 
     Deliberately left unsubmitted: submitting fires sales_invoice_on_submit,
     which sends to KRA immediately when 'Send Invoices To KRA On Submit' is on -
@@ -436,10 +406,14 @@ def create_price_adjustment(original_invoice, items):
     caller previews this draft, then calls submit_and_send_price_adjustment to
     commit and send it in one step once the user has confirmed the figures.
 
-    ``items`` is a list of ``{"item_code": ..., "amount": ...}``: amount is what
-    should be credited back for that item. It is encoded as qty -1 @ rate=amount,
-    the same negative-line shape a hand-built return would use, so the normal
-    is_return validation and TIMS re-encoding both apply unchanged.
+    ``items`` is a list of ``{"item_code": ..., "qty": ..., "discount": ...}``:
+    the real quantity and total discount the user is declaring for that item,
+    at the unit price the original invoice actually declared to TIMS - not a
+    target money value for the system to reverse-engineer a quantity from.
+    ``qty``/``discount`` are stashed on custom_tims_declared_qty/
+    custom_tims_discount so build_payload sends them exactly as entered; the
+    row's own qty/rate stay -1/net-amount, the same shape a hand-built return
+    would use, for ERPNext's own accounting.
 
     All the guardrails - update_stock off, return_against blank, headroom not
     exceeded - are the ones sales_invoice_validate already enforces on any
@@ -449,9 +423,13 @@ def create_price_adjustment(original_invoice, items):
     if isinstance(items, str):
         items = json.loads(items)
 
-    items = [it for it in items if flt(it.get("amount")) > 0]
+    items = [it for it in items if flt(it.get("qty")) > 0]
     if not items:
-        frappe.throw(_("Enter an amount to credit for at least one item."))
+        frappe.throw(_("Enter a quantity to credit for at least one item."))
+
+    from tims_integration.services.allowance import remaining
+
+    headroom = remaining(original_invoice)
 
     original = frappe.get_doc("Sales Invoice", original_invoice)
     original_rows = {row.item_code: row for row in original.items}
@@ -470,6 +448,19 @@ def create_price_adjustment(original_invoice, items):
         row = original_rows.get(it.get("item_code"))
         if not row:
             frappe.throw(_("{0} is not an item on {1}.").format(it.get("item_code"), original.name))
+
+        entry = headroom.get(row.item_name)
+        if not entry or flt(entry["unit_price"]) <= 0:
+            frappe.throw(_("{0} has no accepted TIMS sale recorded for '{1}', so nothing can be "
+                           "declared for it yet.").format(original.name, row.item_name))
+
+        qty = flt(it["qty"])
+        discount = flt(it.get("discount"))
+        net_amount = flt(entry["unit_price"]) * qty - discount
+        if net_amount <= 0:
+            frappe.throw(_("The discount for {0} cannot be {1} or more of {2} x {3}.").format(
+                row.item_name, discount, qty, entry["unit_price"]))
+
         doc.append("items", {
             "item_code": row.item_code,
             "item_name": row.item_name,
@@ -478,11 +469,13 @@ def create_price_adjustment(original_invoice, items):
             "stock_uom": row.stock_uom,
             "conversion_factor": row.conversion_factor or 1,
             "qty": -1,
-            "rate": flt(it["amount"]),
+            "rate": net_amount,
             "income_account": row.income_account,
             "cost_center": row.cost_center,
             "item_tax_template": row.item_tax_template,
             "warehouse": row.warehouse,
+            "custom_tims_declared_qty": qty,
+            "custom_tims_discount": discount,
         })
 
     for tax in original.taxes:
