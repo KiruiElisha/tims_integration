@@ -150,10 +150,7 @@ def build_payload(doc, device_setup):
     items = []
     unclassified = []
 
-    # A price adjustment line is declared verbatim against what the original
-    # invoice actually declared, so the headroom is loaded once before the
-    # lines are built.
-    adjustment = get_adjustment_allowance(doc)
+    adjustment = is_price_adjustment(doc)
 
     for item in invoice_items:
         tax_title = item.tax_title
@@ -164,8 +161,8 @@ def build_payload(doc, device_setup):
         new_item, taxable_amount, tax_amount, category, assumed = calculate_tax(
             item, tax_title, tax_rate)
 
-        if adjustment is not None:
-            new_item = encode_declared_adjustment_line(new_item, item, adjustment)
+        if adjustment:
+            new_item = encode_declared_adjustment_line(new_item, item)
 
         vat_values = update_vat_values(vat_values, category, taxable_amount, tax_amount)
         items.append(new_item)
@@ -229,7 +226,7 @@ def get_invoice_items(invoice):
     query = """
         SELECT sii.name, sii.item_code, sii.item_name, sii.rate, sii.base_rate, sii.base_amount,
         sii.base_net_rate, sii.base_net_amount, sii.qty, sii.item_tax_template,
-        sii.custom_tims_declared_qty, sii.custom_tims_discount,
+        sii.custom_tims_unit_price, sii.custom_tims_discount,
         it_template.title AS tax_title, it_template_detail.tax_rate AS tax_rate
         FROM `tabSales Invoice Item` sii
         LEFT JOIN `tabItem Tax Template` it_template ON it_template.name = sii.item_tax_template
@@ -351,44 +348,28 @@ def is_price_adjustment(doc):
         doc.get("custom_tims_adjustment_type") == ADJUSTMENT_PRICE
 
 
-def get_adjustment_allowance(doc):
+def encode_declared_adjustment_line(new_item, item):
     """
-    Per-line headroom on the invoice being adjusted, or None when this is not a
-    price adjustment and lines should be sent exactly as ERPNext has them.
-    """
-    if not is_price_adjustment(doc):
-        return None
+    Declare one Price Adjustment line exactly as it appears on this document:
+    the row's own qty (the real quantity involved), custom_tims_unit_price
+    (the original invoice's declared unit price) and custom_tims_discount (the
+    total discount), all set once by create_price_adjustment and copied here
+    unchanged. Nothing is looked up or recalculated at send time, so the
+    document and the payload can never diverge - what an auditor sees on the
+    row is exactly what was declared to TIMS.
 
-    from tims_integration.services.allowance import remaining
-
-    return remaining(original_invoice_of(doc)) or {}
-
-
-def encode_declared_adjustment_line(new_item, item, allowance):
-    """
-    Declare one refund line exactly as the user entered it: the quantity and
-    discount they typed for this Price Adjustment line (custom_tims_declared_qty
-    / custom_tims_discount, set by create_price_adjustment), at the unit price
-    the original invoice actually declared to TIMS. Nothing here is derived or
-    recalculated - qty and discount are sent verbatim.
-
-    A line with no declared quantity (a hand-built return, or one predating this
+    A row with no TIMS unit price (a hand-built return, or one predating this
     field) is left exactly as ERPNext built it: the figures are still correct,
     only unoptimised, and refusing to send would be worse than sending a line
     the device accepts anyway.
     """
-    declared_qty = abs(flt(item.get("custom_tims_declared_qty")))
-    if not declared_qty:
-        return new_item
-
-    entry = allowance.get(str(new_item.get("productDesc") or "").strip()) \
-        or allowance.get(str(new_item.get("productCode") or "").strip())
-    if not entry or flt(entry["unit_price"]) <= 0:
+    unit_price = flt(item.get("custom_tims_unit_price"))
+    if unit_price <= 0:
         return new_item
 
     new_item = dict(new_item)
-    new_item["unitPrice"] = float(entry["unit_price"])
-    new_item["quantity"] = float(declared_qty)
+    new_item["unitPrice"] = float(unit_price)
+    new_item["quantity"] = float(abs(flt(item.get("qty"))))
     new_item["discount"] = float(abs(flt(item.get("custom_tims_discount"))))
     return new_item
 
@@ -410,10 +391,15 @@ def create_price_adjustment(original_invoice, items):
     the real quantity and total discount the user is declaring for that item,
     at the unit price the original invoice actually declared to TIMS - not a
     target money value for the system to reverse-engineer a quantity from.
-    ``qty``/``discount`` are stashed on custom_tims_declared_qty/
-    custom_tims_discount so build_payload sends them exactly as entered; the
-    row's own qty/rate stay -1/net-amount, the same shape a hand-built return
-    would use, for ERPNext's own accounting.
+
+    The row is built so nothing needs recalculating between what the document
+    shows and what gets sent: 'Qty' is the real quantity (not a placeholder),
+    'TIMS Unit Price' is the original invoice's own declared price, and 'TIMS
+    Discount' is the discount, both stored verbatim for build_payload to copy
+    into the payload unchanged. 'Rate' is the one derived figure - the net,
+    post-discount price - because ERPNext always computes this row's amount as
+    qty x rate and has no other way to net out a discount, so this is what
+    keeps the credited money correct without touching the other three.
 
     All the guardrails - update_stock off, return_against blank, headroom not
     exceeded - are the ones sales_invoice_validate already enforces on any
@@ -456,10 +442,11 @@ def create_price_adjustment(original_invoice, items):
 
         qty = flt(it["qty"])
         discount = flt(it.get("discount"))
-        net_amount = flt(entry["unit_price"]) * qty - discount
-        if net_amount <= 0:
+        unit_price = flt(entry["unit_price"])
+        net_rate = unit_price - (discount / qty if qty else 0)
+        if net_rate <= 0:
             frappe.throw(_("The discount for {0} cannot be {1} or more of {2} x {3}.").format(
-                row.item_name, discount, qty, entry["unit_price"]))
+                row.item_name, discount, qty, unit_price))
 
         doc.append("items", {
             "item_code": row.item_code,
@@ -468,13 +455,13 @@ def create_price_adjustment(original_invoice, items):
             "uom": row.uom,
             "stock_uom": row.stock_uom,
             "conversion_factor": row.conversion_factor or 1,
-            "qty": -1,
-            "rate": net_amount,
+            "qty": -qty,
+            "rate": net_rate,
             "income_account": row.income_account,
             "cost_center": row.cost_center,
             "item_tax_template": row.item_tax_template,
             "warehouse": row.warehouse,
-            "custom_tims_declared_qty": qty,
+            "custom_tims_unit_price": unit_price,
             "custom_tims_discount": discount,
         })
 

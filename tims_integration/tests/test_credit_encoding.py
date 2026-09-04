@@ -50,8 +50,9 @@ class TestPayloadCompatibility(unittest.TestCase):
 
 class TestDeclaredAdjustmentLine(unittest.TestCase):
 	"""
-	encode_declared_adjustment_line sends the user's own qty/discount verbatim,
-	at the original invoice's declared unit price - it derives nothing.
+	encode_declared_adjustment_line copies qty/TIMS unit price/TIMS discount
+	straight off the row - it looks nothing up and derives nothing, so the
+	document and the payload can never disagree.
 	"""
 
 	def _base_item(self):
@@ -61,11 +62,9 @@ class TestDeclaredAdjustmentLine(unittest.TestCase):
 	def test_declared_qty_and_discount_are_sent_as_entered(self):
 		from tims_integration.services.rest import encode_declared_adjustment_line
 
-		row = {"custom_tims_declared_qty": 400, "custom_tims_discount": 50}
-		allowance = {"Widget": {"unit_price": UNIT, "remaining_qty": Decimal("1000"),
-		                        "remaining_amount": Decimal("100000")}}
+		row = {"qty": -400, "custom_tims_unit_price": UNIT, "custom_tims_discount": 50}
 
-		out = encode_declared_adjustment_line(self._base_item(), row, allowance)
+		out = encode_declared_adjustment_line(self._base_item(), row)
 
 		self.assertEqual(out["quantity"], 400.0)
 		self.assertEqual(out["discount"], 50.0)
@@ -73,20 +72,11 @@ class TestDeclaredAdjustmentLine(unittest.TestCase):
 		# The source line must not be mutated.
 		self.assertEqual(self._base_item()["quantity"], 100.0)
 
-	def test_no_declared_qty_leaves_line_untouched(self):
+	def test_no_tims_unit_price_leaves_line_untouched(self):
 		from tims_integration.services.rest import encode_declared_adjustment_line
 
 		base = self._base_item()
-		out = encode_declared_adjustment_line(base, {}, {"Widget": {"unit_price": UNIT}})
-		self.assertEqual(out, base)
-
-	def test_unmatched_line_is_left_alone(self):
-		from tims_integration.services.rest import encode_declared_adjustment_line
-
-		base = {"productCode": "X", "productDesc": "Unknown", "quantity": 3.0,
-		        "unitPrice": 10.0, "discount": 0.0, "taxtype": "16"}
-		row = {"custom_tims_declared_qty": 3, "custom_tims_discount": 0}
-		out = encode_declared_adjustment_line(base, row, {})
+		out = encode_declared_adjustment_line(base, {"qty": -3})
 		self.assertEqual(out, base)
 
 

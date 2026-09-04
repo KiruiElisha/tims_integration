@@ -69,7 +69,7 @@ def validate_price_adjustment(doc, original):
     per_line = remaining(original)
     for item in doc.items:
         entry = per_line.get(item.item_name)
-        qty = abs(flt(item.get("custom_tims_declared_qty")) or item.qty)
+        qty = abs(flt(item.qty))
         if not entry:
             frappe.throw(_("{0} has no accepted TIMS sale recorded for '{1}', so nothing can be "
                            "adjusted against it.").format(original, item.item_name))

@@ -161,24 +161,25 @@ for _band in "abcde":
 
 CUSTOM_FIELDS["Sales Invoice Item"] = [
 	{
-		"fieldname": "custom_tims_declared_qty",
-		"label": "TIMS Declared Qty",
-		"fieldtype": "Float",
-		"insert_after": "qty",
+		"fieldname": "custom_tims_unit_price",
+		"label": "TIMS Unit Price",
+		"fieldtype": "Currency",
+		"insert_after": "rate",
 		"no_copy": 1,
-		"print_hide": 1,
-		"description": "The real quantity declared to TIMS for this Price Adjustment line, entered by "
-		"the user - independent of 'Qty', which stays -1 for the return accounting.",
+		"in_list_view": 1,
+		"description": "The original (pre-discount) unit price declared to TIMS for this Price "
+		"Adjustment line. 'Rate' is net of the TIMS Discount below, which is what ERPNext books; "
+		"this is the undiscounted price TIMS sees, exactly as sent - not recalculated.",
 	},
 	{
 		"fieldname": "custom_tims_discount",
 		"label": "TIMS Discount",
 		"fieldtype": "Currency",
-		"insert_after": "custom_tims_declared_qty",
+		"insert_after": "custom_tims_unit_price",
 		"no_copy": 1,
-		"print_hide": 1,
-		"description": "Total discount declared to TIMS for this Price Adjustment line, entered by "
-		"the user and sent as-is - not recalculated.",
+		"in_list_view": 1,
+		"description": "Total discount for this Price Adjustment line, declared to TIMS exactly as "
+		"shown here: 'Qty' x 'TIMS Unit Price' - 'TIMS Discount' is the amount actually credited.",
 	},
 ]
 
