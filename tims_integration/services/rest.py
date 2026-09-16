@@ -222,17 +222,48 @@ def get_customer_pin(doc):
     return (frappe.db.get_value("Customer", doc.customer, "tax_id") or "").strip()
 
 
+# Item columns this app adds itself, via the custom fields install.setup() creates.
+# They only carry Price Adjustment figures, so every other invoice is complete
+# without them - see get_optional_item_columns for why they are not assumed.
+OPTIONAL_ITEM_COLUMNS = ("custom_tims_unit_price", "custom_tims_discount")
+
+
+def get_optional_item_columns():
+    """
+    The app's own item columns, but only the ones the site actually has.
+
+    Code reaches a site before its migration does: a deploy that ships a new
+    custom field leaves a window where the column is not there yet, and naming it
+    in the SELECT fails the whole query. That would stop every submission on the
+    site, not just the Price Adjustments these two columns are for, so a missing
+    column is treated as a missing value instead - which is exactly what
+    encode_declared_adjustment_line already falls back on.
+    """
+    present = frappe.db.get_table_columns("Sales Invoice Item")
+    missing = [c for c in OPTIONAL_ITEM_COLUMNS if c not in present]
+
+    if missing:
+        frappe.log_error(
+            title="TIMS KRA: item fields missing",
+            message="Sales Invoice Item is missing {0}. Price Adjustments will be declared "
+                    "from the ERPNext figures rather than the declared ones until this site "
+                    "is migrated (bench --site <site> migrate).".format(", ".join(missing))
+        )
+
+    return [c for c in OPTIONAL_ITEM_COLUMNS if c in present]
+
+
 def get_invoice_items(invoice):
+    optional = "".join("sii.{0}, ".format(c) for c in get_optional_item_columns())
     query = """
         SELECT sii.name, sii.item_code, sii.item_name, sii.rate, sii.base_rate, sii.base_amount,
-        sii.base_net_rate, sii.base_net_amount, sii.qty, sii.item_tax_template,
-        sii.custom_tims_unit_price, sii.custom_tims_discount,
+        sii.base_net_rate, sii.base_net_amount, sii.qty, sii.item_tax_template, {optional}
         it_template.title AS tax_title, it_template_detail.tax_rate AS tax_rate
         FROM `tabSales Invoice Item` sii
         LEFT JOIN `tabItem Tax Template` it_template ON it_template.name = sii.item_tax_template
         LEFT JOIN `tabItem Tax Template Detail` it_template_detail ON it_template_detail.parent = sii.item_tax_template
         WHERE sii.parent = %s
-    """
+    """.format(optional=optional)
     return frappe.db.sql(query, invoice, as_dict=True)
 
 
