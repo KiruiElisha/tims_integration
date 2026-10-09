@@ -822,6 +822,28 @@ def get_vat_band_values(payload):
     return values
 
 
+# ETR tab fields added by the Kenyan ERPNext customization, mapped from the TIMS
+# fields they mirror. Not every site has that app, so each is set only if present.
+ETR_TAB_FIELDS = {
+    "etr_serial_number": "custom_cusn",
+    "etr_invoice_number": "custom_cuin",
+    "cu_invoice_date": "custom_kra_signing_time",
+    "cu_link": "custom_kra_qr_code_data",
+}
+
+
+def get_etr_tab_values(doc, values):
+    meta = frappe.get_meta(doc.doctype)
+    etr_values = {
+        etr_field: values.get(tims_field)
+        for etr_field, tims_field in ETR_TAB_FIELDS.items()
+        if meta.has_field(etr_field)
+    }
+    if meta.has_field("is_filed"):
+        etr_values["is_filed"] = 1
+    return etr_values
+
+
 def update_doc_with_response(doc, data, payload=None):
     signing_time = parse_signing_time(data.get("dtStmp"))
 
@@ -838,6 +860,8 @@ def update_doc_with_response(doc, data, payload=None):
 
     if payload:
         values.update(get_vat_band_values(payload))
+
+    values.update(get_etr_tab_values(doc, values))
 
     # db_set writes straight to the row. doc.save() cannot be used here: this runs
     # from the Sales Invoice on_submit hook, where saving collides with the in-flight
